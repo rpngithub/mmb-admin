@@ -1,5 +1,6 @@
 import { Tag, Tooltip } from 'antd';
 import dayjs from 'dayjs';
+import ImageThumb from './ImageThumb';
 
 function renderBoolean(value) {
   const truthy = value === true || value === 1 || value === '1';
@@ -37,6 +38,30 @@ function renderCode(value) {
   return <code>{String(value)}</code>;
 }
 
+/** A hex colour as a swatch + its code, so the palette is scannable at a glance. */
+function renderColor(value) {
+  if (!value) return '—';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      <span
+        style={{
+          width: 18,
+          height: 18,
+          borderRadius: 4,
+          background: String(value),
+          border: '1px solid rgba(0,0,0,0.15)',
+          flex: 'none',
+        }}
+      />
+      <code>{String(value)}</code>
+    </span>
+  );
+}
+
+function renderImage(value) {
+  return <ImageThumb k={value} />;
+}
+
 function renderDefault(value) {
   if (value === null || value === undefined || value === '') return '—';
   if (typeof value === 'object') return <code>{JSON.stringify(value)}</code>;
@@ -67,6 +92,10 @@ export function buildColumns(configs) {
       col.render = renderDate;
     } else if (c.type === 'code') {
       col.render = renderCode;
+    } else if (c.type === 'color') {
+      col.render = renderColor;
+    } else if (c.type === 'image') {
+      col.render = renderImage;
     } else {
       col.render = renderDefault;
     }

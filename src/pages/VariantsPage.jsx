@@ -9,62 +9,63 @@ import {
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import ImageThumb from '../components/ImageThumb';
-import ThemeEditorDrawer from '../components/ThemeEditorDrawer';
+import VariantEditorDrawer from '../components/VariantEditorDrawer';
 
 const { Title, Text } = Typography;
 
 const isTrue = (v) => v === true || v === 1 || v === '1';
 
 /**
- * Flat themes table with a Group column and a group filter. The themes list is
- * unfiltered (returns all themes), so the group filter is applied client-side.
- * Group names are resolved from the theme-groups list (group_id → name).
+ * Flat variants table with a Brand Series column and a series filter. The
+ * variants list is unfiltered (returns all variants), so the series filter is
+ * applied client-side. Series names come from the nested BrandSeries, falling
+ * back to the brand-series list (series_id → name).
  */
-export default function ThemesPage() {
+export default function VariantsPage() {
   const perms = usePermissions();
   const { message, modal } = App.useApp();
 
-  const canCreate = perms.can('themes', 'create');
-  const canUpdate = perms.can('themes', 'update');
-  const canDelete = perms.can('themes', 'delete');
+  const canCreate = perms.can('variants', 'create');
+  const canUpdate = perms.can('variants', 'update');
+  const canDelete = perms.can('variants', 'delete');
 
   const [search, setSearch] = useState('');
-  const [groupFilter, setGroupFilter] = useState(null);
-  const [editor, setEditor] = useState({ open: false, theme: null });
+  const [seriesFilter, setSeriesFilter] = useState(null);
+  const [editor, setEditor] = useState({ open: false, variant: null });
 
-  const themesQuery = adminApi.endpoints.themesList.useQuery();
-  const groupsQuery = adminApi.endpoints.themeGroupsList.useQuery();
-  const [removeTheme] = adminApi.endpoints.themesRemove.useMutation();
+  const variantsQuery = adminApi.endpoints.variantsList.useQuery();
+  const seriesQuery = adminApi.endpoints.brandSeriesList.useQuery();
+  const [removeVariant] = adminApi.endpoints.variantsRemove.useMutation();
 
-  const themes = useMemo(() => themesQuery.data || [], [themesQuery.data]);
-  const groups = useMemo(() => groupsQuery.data || [], [groupsQuery.data]);
+  const variants = useMemo(() => variantsQuery.data || [], [variantsQuery.data]);
+  const seriesList = useMemo(() => seriesQuery.data || [], [seriesQuery.data]);
 
-  const groupName = useMemo(() => {
+  const seriesName = useMemo(() => {
     const map = new Map();
-    groups.forEach((g) => map.set(g.id, g.name));
+    seriesList.forEach((s) => map.set(s.id, s.name));
     return map;
-  }, [groups]);
+  }, [seriesList]);
 
   const rows = useMemo(() => {
-    let list = themes;
-    if (groupFilter != null) list = list.filter((t) => t.group_id === groupFilter);
+    let list = variants;
+    if (seriesFilter != null) list = list.filter((v) => v.series_id === seriesFilter);
     if (search.trim()) {
       const q = search.toLowerCase();
-      list = list.filter((t) => t.name?.toLowerCase().includes(q));
+      list = list.filter((v) => v.name?.toLowerCase().includes(q));
     }
     return list;
-  }, [themes, groupFilter, search]);
+  }, [variants, seriesFilter, search]);
 
-  const onDelete = (theme) => {
+  const onDelete = (variant) => {
     modal.confirm({
-      title: `Delete theme "${theme.name}"?`,
+      title: `Delete variant "${variant.name}"?`,
       content: 'Its template associations are removed; the templates themselves are untouched.',
       okText: 'Delete',
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await removeTheme(theme.uid).unwrap();
-          message.success('Theme deleted');
+          await removeVariant(variant.uid).unwrap();
+          message.success('Variant deleted');
         } catch {
           // error notification handled by baseQuery
         }
@@ -82,10 +83,22 @@ export default function ThemesPage() {
     },
     { title: 'Name', dataIndex: 'name', key: 'name', render: (v) => <Text strong>{v}</Text> },
     {
-      title: 'Group',
-      dataIndex: 'group_id',
-      key: 'group',
-      render: (id) => groupName.get(id) || <Text type="secondary">#{id}</Text>,
+      title: 'Brand series',
+      key: 'series',
+      render: (_v, variant) =>
+        variant.BrandSeries?.name ||
+        seriesName.get(variant.series_id) || <Text type="secondary">#{variant.series_id}</Text>,
+    },
+    {
+      title: 'Badge',
+      key: 'badge',
+      width: 120,
+      render: (_v, variant) =>
+        variant.VariantBadge?.name ? (
+          <Tag>{variant.VariantBadge.name}</Tag>
+        ) : (
+          <Text type="secondary">—</Text>
+        ),
     },
     {
       title: 'Likes',
@@ -113,13 +126,13 @@ export default function ThemesPage() {
       key: 'actions',
       width: 110,
       fixed: 'right',
-      render: (_v, theme) => (
+      render: (_v, variant) => (
         <Space size="small">
           {canUpdate && (
             <Button
               size="small"
               icon={<EditOutlined />}
-              onClick={() => setEditor({ open: true, theme })}
+              onClick={() => setEditor({ open: true, variant })}
               title="Edit"
             />
           )}
@@ -128,7 +141,7 @@ export default function ThemesPage() {
               size="small"
               danger
               icon={<DeleteOutlined />}
-              onClick={() => onDelete(theme)}
+              onClick={() => onDelete(variant)}
               title="Delete"
             />
           )}
@@ -150,22 +163,22 @@ export default function ThemesPage() {
         }}
       >
         <Title level={4} style={{ margin: 0 }}>
-          Themes
+          Variants
         </Title>
         <Space wrap>
           <Select
             allowClear
-            placeholder="All groups"
+            placeholder="All brand series"
             style={{ width: 200 }}
-            value={groupFilter ?? undefined}
-            onChange={(v) => setGroupFilter(v ?? null)}
+            value={seriesFilter ?? undefined}
+            onChange={(v) => setSeriesFilter(v ?? null)}
             showSearch
             optionFilterProp="label"
-            options={groups.map((g) => ({ label: g.name, value: g.id }))}
+            options={seriesList.map((s) => ({ label: s.name, value: s.id }))}
           />
           <Input.Search
             allowClear
-            placeholder="Search themes"
+            placeholder="Search variants"
             style={{ width: 220 }}
             onChange={(e) => setSearch(e.target.value)}
             onSearch={setSearch}
@@ -173,10 +186,10 @@ export default function ThemesPage() {
           <Button
             icon={<ReloadOutlined />}
             onClick={() => {
-              themesQuery.refetch();
-              groupsQuery.refetch();
+              variantsQuery.refetch();
+              seriesQuery.refetch();
             }}
-            loading={themesQuery.isFetching}
+            loading={variantsQuery.isFetching}
           >
             Reload
           </Button>
@@ -184,9 +197,9 @@ export default function ThemesPage() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              onClick={() => setEditor({ open: true, theme: null })}
+              onClick={() => setEditor({ open: true, variant: null })}
             >
-              New Theme
+              New Variant
             </Button>
           )}
         </Space>
@@ -196,19 +209,19 @@ export default function ThemesPage() {
         rowKey="uid"
         columns={columns}
         dataSource={rows}
-        loading={themesQuery.isLoading}
+        loading={variantsQuery.isLoading}
         scroll={{ x: 'max-content' }}
         size="middle"
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `${t} total` }}
       />
 
-      <ThemeEditorDrawer
+      <VariantEditorDrawer
         open={editor.open}
-        theme={editor.theme}
-        defaultGroupId={groupFilter}
-        onClose={() => setEditor({ open: false, theme: null })}
+        variant={editor.variant}
+        defaultSeriesId={seriesFilter}
+        onClose={() => setEditor({ open: false, variant: null })}
         onSaved={() => {
-          themesQuery.refetch();
+          variantsQuery.refetch();
         }}
       />
     </div>

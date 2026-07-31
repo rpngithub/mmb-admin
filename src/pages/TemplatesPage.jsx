@@ -27,7 +27,7 @@ const EMPTY_FILTERS = {
   template_type: undefined,
   category_id: undefined,
   business_category_id: undefined,
-  theme_id: undefined,
+  variant_id: undefined,
   size_id: undefined,
   tag_ids: [],
   is_premium: undefined,
@@ -74,7 +74,7 @@ export default function TemplatesPage() {
 
   const { data: categories } = adminApi.endpoints.templateCategoriesList.useQuery();
   const { data: businessCategories } = adminApi.endpoints.businessCategoriesList.useQuery();
-  const { data: themes } = adminApi.endpoints.themesList.useQuery();
+  const { data: variants } = adminApi.endpoints.variantsList.useQuery();
   const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
   const { data: tags } = adminApi.endpoints.tagsList.useQuery();
 
@@ -86,7 +86,10 @@ export default function TemplatesPage() {
       category_id: filters.category_id,
       // Sent as industry_id (renamed from the deprecated business_category_id).
       industry_id: filters.business_category_id,
-      theme_id: filters.theme_id,
+      // Still sent as the deprecated `theme_id` alias: the brief renames the
+      // variants CRUD but doesn't confirm whether this list filter followed, and
+      // the alias is still accepted. Switch to `variant_id` once confirmed.
+      theme_id: filters.variant_id,
       size_id: filters.size_id,
       tags: filters.tag_ids.length ? filters.tag_ids.join(',') : undefined,
       is_premium: filters.is_premium,
@@ -289,11 +292,11 @@ export default function TemplatesPage() {
           allowClear
           showSearch
           optionFilterProp="label"
-          placeholder="Theme"
+          placeholder="Variant"
           style={{ width: 150 }}
-          value={filters.theme_id}
-          onChange={(v) => setFilter('theme_id', v)}
-          options={byId(themes)}
+          value={filters.variant_id}
+          onChange={(v) => setFilter('variant_id', v)}
+          options={byId(variants)}
         />
         <Select
           allowClear

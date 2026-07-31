@@ -11,6 +11,10 @@ import {
   SettingOutlined,
   AuditOutlined,
   ImportOutlined,
+  BgColorsOutlined,
+  BulbOutlined,
+  TrophyOutlined,
+  SkinOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -31,6 +35,10 @@ const ICON_BY_KEY = {
   tags: <TagsOutlined />,
   faqs: <ReadOutlined />,
   faqCategories: <ReadOutlined />,
+  variants: <SkinOutlined />,
+  colors: <BgColorsOutlined />,
+  stylePersonalities: <BulbOutlined />,
+  variantBadges: <TrophyOutlined />,
 };
 
 /**
@@ -62,8 +70,8 @@ const SPECIAL_ITEMS = [
   {
     key: '/bulk-import',
     label: 'Bulk Import',
-    // Visible if the admin can read ANY importable entity (categories or themes).
-    anyPermission: ['categories', 'themes'],
+    // Visible if the admin can read ANY importable entity (categories or variants).
+    anyPermission: ['categories', 'variants'],
     group: 'Catalog',
     icon: <ImportOutlined />,
   },

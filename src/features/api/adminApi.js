@@ -24,8 +24,8 @@ const SPECIAL_TAGS = [
 
 /**
  * Which list tags a successful (committed) bulk import must invalidate, keyed by
- * the import entity's URL segment. Industries can create new tags; themes can
- * auto-create theme groups — so those refetch too.
+ * the import entity's URL segment. Industries can create new tags; variants can
+ * auto-create brand series (the `series` column) — so those refetch too.
  */
 const IMPORT_INVALIDATE_TAGS = {
   industries: [
@@ -33,9 +33,9 @@ const IMPORT_INVALIDATE_TAGS = {
     { type: 'tags', id: 'LIST' },
   ],
   'template-categories': [{ type: 'templateCategories', id: 'LIST' }],
-  themes: [
-    { type: 'themes', id: 'LIST' },
-    { type: 'themeGroups', id: 'LIST' },
+  variants: [
+    { type: 'variants', id: 'LIST' },
+    { type: 'brandSeries', id: 'LIST' },
   ],
 };
 
@@ -323,7 +323,7 @@ export const adminApi = createApi({
       ],
     }),
 
-    // ---- Template relations (tags / sizes / themes / business-categories) --
+    // ---- Template relations (tags / sizes / variants / industries) ---------
     // GET returns the preselect shape; PUT is a per-key full replace (≥1 key).
     templateRelations: builder.query({
       query: (uid) => ({ url: `/admin/templates/${uid}/relations` }),
@@ -561,53 +561,77 @@ export const adminApi = createApi({
       ],
     }),
 
-    // ---- Themes: premium (plan-scoped) surface -----------------------------
-    // Dedicated theme update used by the editor (all fields optional). Uses PATCH
-    // to match the theme contract; description + likes_count are the newly-editable
-    // fields.
-    themeUpdate: builder.mutation({
-      query: ({ uid, body }) => ({ url: `/admin/themes/${uid}`, method: 'PATCH', body }),
+    // ---- Variants: premium (plan-scoped) surface ---------------------------
+    // Dedicated variant update used by the editor (all fields optional). Uses
+    // PATCH to match the variant contract; description, badge_id and likes_count
+    // are the editable extras beyond the generic create.
+    variantUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/variants/${uid}`, method: 'PATCH', body }),
       invalidatesTags: (_r, _e, { uid }) => [
-        { type: 'themes', id: uid },
-        { type: 'themes', id: 'LIST' },
+        { type: 'variants', id: uid },
+        { type: 'variants', id: 'LIST' },
       ],
     }),
 
-    // Theme relations — plan ENTITLEMENT + business-category tags.
-    // GET → { id, uid, name, Plans:[{id,uid,name}], BusinessCategories:[...] }.
+    // Variant relations — plan ENTITLEMENT + industry tags.
+    // GET → { id, uid, name, Plans:[…], Industries:[…], BusinessCategories:[…]
+    //         (deprecated duplicate), VariantBadge:{…} }.
     // PUT is a per-key full replace: each provided key replaces that whole set,
     // an omitted key is left untouched (send plan_ids:[] to clear). Selecting
-    // plans is the core premium access control; business categories are just
-    // display/filter tags. Both invalidate the theme's :rel tag so the panels
-    // refetch. Silent — the panels surface their own success messages.
-    themeRelations: builder.query({
-      query: (uid) => ({ url: `/admin/themes/${uid}/relations` }),
-      providesTags: (_r, _e, uid) => [{ type: 'themes', id: `${uid}:rel` }],
+    // plans is the core premium access control — an EMPTY array locks the variant
+    // to everyone; industries are just display/filter tags. Both invalidate the
+    // variant's :rel tag so the panels refetch. Silent — the panels surface their
+    // own success messages.
+    variantRelations: builder.query({
+      query: (uid) => ({ url: `/admin/variants/${uid}/relations` }),
+      providesTags: (_r, _e, uid) => [{ type: 'variants', id: `${uid}:rel` }],
     }),
-    themeSetRelations: builder.mutation({
+    variantSetRelations: builder.mutation({
       query: ({ uid, body }) => ({
-        url: `/admin/themes/${uid}/relations`,
+        url: `/admin/variants/${uid}/relations`,
         method: 'PUT',
         body,
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [{ type: 'themes', id: `${uid}:rel` }],
+      invalidatesTags: (_r, _e, { uid }) => [{ type: 'variants', id: `${uid}:rel` }],
     }),
 
-    // Theme ↔ templates assignment (full replace of template_ids).
-    // GET → theme incl. Templates:[{id,uid,name,thumbnail_s3_key,status,template_type}].
-    themeTemplates: builder.query({
-      query: (uid) => ({ url: `/admin/themes/${uid}/templates` }),
-      providesTags: (_r, _e, uid) => [{ type: 'themes', id: `${uid}:tpl` }],
+    // Variant ↔ templates assignment (full replace of template_ids).
+    // GET → variant incl. Templates:[{id,uid,name,thumbnail_s3_key,status,template_type}].
+    variantTemplates: builder.query({
+      query: (uid) => ({ url: `/admin/variants/${uid}/templates` }),
+      providesTags: (_r, _e, uid) => [{ type: 'variants', id: `${uid}:tpl` }],
     }),
-    themeSetTemplates: builder.mutation({
+    variantSetTemplates: builder.mutation({
       query: ({ uid, template_ids }) => ({
-        url: `/admin/themes/${uid}/templates`,
+        url: `/admin/variants/${uid}/templates`,
         method: 'PUT',
         body: { template_ids },
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [{ type: 'themes', id: `${uid}:tpl` }],
+      invalidatesTags: (_r, _e, { uid }) => [{ type: 'variants', id: `${uid}:tpl` }],
+    }),
+
+    // ---- Brand series relations (style personalities / tags / colours) -----
+    // GET → { StylePersonalities:[…], Tags:[…], Colors:[…] }.
+    // PUT is a per-key full replace over { style_personality_ids, tag_ids,
+    // color_ids } — any subset. style_personality_ids and color_ids are ORDERED:
+    // array position IS the stored display_order and comes back in that order
+    // everywhere including the public API, so drag-to-reorder just re-sends the
+    // array. tag_ids is unordered and draws on the SHARED tag pool (the same rows
+    // templates and assets use). Silent — the editor owns its messaging.
+    brandSeriesRelations: builder.query({
+      query: (uid) => ({ url: `/admin/brand-series/${uid}/relations` }),
+      providesTags: (_r, _e, uid) => [{ type: 'brandSeries', id: `${uid}:rel` }],
+    }),
+    brandSeriesSetRelations: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/brand-series/${uid}/relations`,
+        method: 'PUT',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [{ type: 'brandSeries', id: `${uid}:rel` }],
     }),
 
     // ---- Special events (calendar) ----------------------------------------
@@ -781,12 +805,14 @@ export const {
   useMultipartAbortMutation,
   useTemplateRelationsQuery,
   useTemplateSetRelationsMutation,
-  // Themes (premium, plan-scoped)
-  useThemeUpdateMutation,
-  useThemeRelationsQuery,
-  useThemeSetRelationsMutation,
-  useThemeTemplatesQuery,
-  useThemeSetTemplatesMutation,
+  // Variants (premium, plan-scoped) + brand series relations
+  useVariantUpdateMutation,
+  useVariantRelationsQuery,
+  useVariantSetRelationsMutation,
+  useVariantTemplatesQuery,
+  useVariantSetTemplatesMutation,
+  useBrandSeriesRelationsQuery,
+  useBrandSeriesSetRelationsMutation,
   useTemplateBundleConfirmMutation,
   useTemplateBundleResetMutation,
   // FAQ + FAQ categories (merged screen)

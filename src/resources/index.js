@@ -36,6 +36,22 @@ const activeField = {
   initialValue: true,
 };
 
+// The taxonomies below order by `display_order` (not the legacy `sort_order`).
+const displayOrderField = {
+  name: 'display_order',
+  label: 'Display order',
+  type: 'number',
+};
+
+const displayOrderColumn = {
+  dataIndex: 'display_order',
+  title: 'Order',
+  width: 80,
+};
+
+// Server-generated public URL key — read-only, never a create/edit field.
+const slugColumn = { dataIndex: 'slug', title: 'Slug', type: 'code', width: 180 };
+
 /**
  * A generic CRUD resource. Anything omitted (columns/fields) is inferred from
  * live data at render time by ResourceManager.
@@ -111,26 +127,111 @@ export const RESOURCES = [
     group: 'Catalog',
   }),
 
-  // Themes & Theme Groups have dedicated pages (src/pages/Themes*.jsx →
-  // ThemeEditorDrawer, wired in router.jsx): a two-level group→themes view and a
-  // flat themes table, with thumbnail upload. These configs only supply
-  // nav/permission/endpoints; their `fields`/`columns` are unused.
+  // Variants & Brand Series (formerly Themes & Theme Groups) have dedicated pages
+  // (src/pages/{Variants,BrandSeries}Page.jsx → {Variant,BrandSeries}EditorDrawer,
+  // wired in router.jsx): a two-level series→variants view and a flat variants
+  // table, with icon/thumbnail upload and the ordered series relations. These
+  // configs only supply nav/permission/endpoints; `fields`/`columns` are unused.
+  //
+  // Gating lives on the VARIANT: plan entitlement and business adoption attach to
+  // a variant, never to its parent series.
   resource({
-    key: 'themes',
-    name: 'Themes',
-    title: 'Theme',
-    path: '/admin/themes',
-    permission: 'themes',
+    key: 'brandSeries',
+    name: 'Brand Series',
+    title: 'Brand Series',
+    path: '/admin/brand-series',
+    permission: 'brand_series',
     group: 'Catalog',
   }),
 
   resource({
-    key: 'themeGroups',
-    name: 'Theme Groups',
-    title: 'Theme Group',
-    path: '/admin/theme-groups',
-    permission: 'themes',
+    key: 'variants',
+    name: 'Variants',
+    title: 'Variant',
+    path: '/admin/variants',
+    permission: 'variants',
     group: 'Catalog',
+  }),
+
+  // ---- Brand-series / variant taxonomies -----------------------------------
+  // All three are the standard generic-CRUD shape with a case-insensitive unique
+  // name (duplicate → 409) and a server-generated slug, so they run on the shared
+  // ResourceManager. Note the split permission domains: style personalities and
+  // colours are governed by `brand_series`, variant badges by `variants`.
+
+  // The strapline under a series name: "Bold • Premium • Confident".
+  resource({
+    key: 'stylePersonalities',
+    name: 'Style Personalities',
+    title: 'Style Personality',
+    path: '/admin/style-personalities',
+    permission: 'brand_series',
+    group: 'Catalog',
+    columns: [
+      { dataIndex: 'name', title: 'Name' },
+      slugColumn,
+      displayOrderColumn,
+      activeColumn,
+    ],
+    fields: [
+      { name: 'name', label: 'Name', type: 'text', required: true },
+      displayOrderField,
+      activeField,
+    ],
+  }),
+
+  // Shared palette — "Gold" resolves to one hex everywhere. hex_code MUST be
+  // #RRGGBB; the server returns 400 for anything else, so the field validates it.
+  resource({
+    key: 'colors',
+    name: 'Colours',
+    title: 'Colour',
+    path: '/admin/colors',
+    permission: 'brand_series',
+    group: 'Catalog',
+    columns: [
+      { dataIndex: 'hex_code', title: 'Colour', type: 'color', width: 140 },
+      { dataIndex: 'name', title: 'Name' },
+      slugColumn,
+      displayOrderColumn,
+      activeColumn,
+    ],
+    fields: [
+      { name: 'name', label: 'Name', type: 'text', required: true },
+      {
+        name: 'hex_code',
+        label: 'Hex code',
+        type: 'color',
+        required: true,
+        rules: [{ pattern: /^#[0-9A-Fa-f]{6}$/, message: 'Must be a #RRGGBB hex colour' }],
+        help: 'Six-digit hex, e.g. #D4AF37.',
+      },
+      displayOrderField,
+      activeField,
+    ],
+  }),
+
+  // The chip on a variant card: "Popular", "Fresh", "Dynamic".
+  resource({
+    key: 'variantBadges',
+    name: 'Variant Badges',
+    title: 'Variant Badge',
+    path: '/admin/variant-badges',
+    permission: 'variants',
+    group: 'Catalog',
+    columns: [
+      { dataIndex: 'icon_s3_key', title: 'Icon', type: 'image', width: 80 },
+      { dataIndex: 'name', title: 'Name' },
+      slugColumn,
+      displayOrderColumn,
+      activeColumn,
+    ],
+    fields: [
+      { name: 'name', label: 'Name', type: 'text', required: true },
+      { name: 'icon_s3_key', label: 'Icon', type: 'image', slot: 'variant_badge_icon' },
+      displayOrderField,
+      activeField,
+    ],
   }),
 
   // Template Sizes have a dedicated page (src/pages/TemplateSizesPage.jsx, wired
