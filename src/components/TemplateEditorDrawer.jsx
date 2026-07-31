@@ -36,7 +36,7 @@ const isTrue = (v) => v === true || v === 1 || v === '1';
 
 /**
  * Tabbed template editor: Details (metadata-only create/update), Bundle (ZIP
- * ingest), Relations (tags/sizes/themes/industries, auto-saved), Publish.
+ * ingest), Relations (tags/sizes/variants/industries, auto-saved), Publish.
  * Bundle & Relations need a uid, so for a new template you save Details first;
  * the drawer then keeps that uid and enables the other tabs.
  *
@@ -242,7 +242,11 @@ function BundleTab({ uid, onSaved }) {
 const RELATION_KEYS = {
   tags: 'tag_ids',
   sizes: 'size_ids',
-  themes: 'theme_ids',
+  // Themes were renamed to Variants, but the template-side relation key wasn't
+  // covered by the rename brief — so we keep sending the still-accepted
+  // `theme_ids` alias and read whichever association key comes back. Switch to
+  // `variant_ids` once the API side confirms it.
+  variants: 'theme_ids',
   business: 'industry_ids',
 };
 const SAVE_DEBOUNCE_MS = 600;
@@ -250,7 +254,7 @@ const SAVE_DEBOUNCE_MS = 600;
 const relationsToValue = (relations) => ({
   tags: (relations?.Tags || []).map((t) => t.id),
   sizes: (relations?.TemplateSizes || []).map((s) => s.id),
-  themes: (relations?.Themes || []).map((t) => t.id),
+  variants: (relations?.Variants || relations?.Themes || []).map((t) => t.id),
   // GET now returns `Industries`; `BusinessCategories` is a deprecated duplicate.
   business: (relations?.Industries || relations?.BusinessCategories || []).map((b) => b.id),
 });
@@ -262,14 +266,14 @@ function RelationsPanel({ uid }) {
   });
   const { data: tags } = adminApi.endpoints.tagsList.useQuery();
   const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
-  const { data: themes } = adminApi.endpoints.themesList.useQuery();
+  const { data: variants } = adminApi.endpoints.variantsList.useQuery();
   const { data: businessCategories } = adminApi.endpoints.businessCategoriesList.useQuery();
   const [setRelations] = adminApi.endpoints.templateSetRelations.useMutation();
 
-  const [value, setValue] = useState({ tags: [], sizes: [], themes: [], business: [] });
+  const [value, setValue] = useState({ tags: [], sizes: [], variants: [], business: [] });
   const [saveState, setSaveState] = useState({}); // key → 'saving' | 'saved'
 
-  const serverRef = useRef({ tags: [], sizes: [], themes: [], business: [] }); // last known-good
+  const serverRef = useRef({ tags: [], sizes: [], variants: [], business: [] }); // last known-good
   const pendingRef = useRef({}); // key → ids awaiting (or mid-) save
   const timersRef = useRef({});
   const savedTimersRef = useRef({});
@@ -338,7 +342,7 @@ function RelationsPanel({ uid }) {
     label: `${s.name} (${s.width}×${s.height})`,
     value: s.id,
   }));
-  const themeOptions = (themes || []).map((x) => ({ label: x.name, value: x.id }));
+  const variantOptions = (variants || []).map((x) => ({ label: x.name, value: x.id }));
   const businessOptions = (businessCategories || []).map((x) => ({ label: x.name, value: x.id }));
 
   const field = (label, key, options, required) => (
@@ -379,7 +383,7 @@ function RelationsPanel({ uid }) {
         </Paragraph>
         {field('Tags', 'tags', tagOptions, true)}
         {field('Sizes', 'sizes', sizeOptions, true)}
-        {field('Themes', 'themes', themeOptions)}
+        {field('Variants', 'variants', variantOptions)}
         {field('Industries', 'business', businessOptions)}
       </Space>
     </Spin>
@@ -525,9 +529,9 @@ function PublishPanel({ uid, onSaved, onGoToTab }) {
               ),
             },
             {
-              key: 'themes',
-              label: 'Themes',
-              children: <ChipList items={chips(relations?.Themes)} />,
+              key: 'variants',
+              label: 'Variants',
+              children: <ChipList items={chips(relations?.Variants || relations?.Themes)} />,
             },
             {
               key: 'industries',

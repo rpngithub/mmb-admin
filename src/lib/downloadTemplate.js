@@ -54,7 +54,7 @@ function saveBlob(blob, filename) {
  * Download a CSV template (or its reference/example variant) for an entity.
  *
  * @param {object} opts
- * @param {string} opts.entity   URL segment: 'industries' | 'template-categories' | 'themes'
+ * @param {string} opts.entity   URL segment: 'industries' | 'template-categories' | 'variants'
  * @param {boolean} [opts.example]  true → the REFERENCE-ONLY example file
  * @param {string} opts.token    admin JWT access token (Bearer)
  * @returns {Promise<void>}  resolves once the download is triggered

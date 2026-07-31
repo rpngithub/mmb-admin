@@ -66,11 +66,11 @@ const ENTITIES = [
     ],
   },
   {
-    value: 'themes',
-    label: 'Themes',
-    domain: 'themes',
+    value: 'variants',
+    label: 'Variants',
+    domain: 'variants',
     columns: [
-      ['group', 'Required. Theme-group name or slug — auto-created if it doesn’t exist.'],
+      ['series', 'Required. Brand-series name or slug — auto-created if it doesn’t exist.'],
       ['name', 'Required.'],
       ['description', 'Optional.'],
       ['display_order', 'Number.'],

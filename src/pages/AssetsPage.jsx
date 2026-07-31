@@ -36,7 +36,7 @@ const typeOptions = ASSET_TYPES.map((t) => ({ label: t, value: t }));
 /**
  * Assets table driven by the server filters (category_id / asset_type / status),
  * with a size-aware upload widget and M2M tag editing (loaded via …/tags, saved
- * via PUT …/tags). The themes/categories permission model applies: one `assets`
+ * via PUT …/tags). The variants/categories permission model applies: one `assets`
  * domain gates everything.
  */
 export default function AssetsPage() {

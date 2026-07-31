@@ -1,4 +1,32 @@
-import { Form, Input, InputNumber, Switch, Select, DatePicker } from 'antd';
+import { Form, Input, InputNumber, Switch, Select, DatePicker, ColorPicker, Space } from 'antd';
+import ImageUploadField from './ImageUploadField';
+
+/**
+ * Hex colour input whose form value is always a plain `#rrggbb` string (never a
+ * ColorPicker Color object), because that's what the API stores and validates.
+ * `disabledAlpha` keeps toHexString() at six digits; the text box next to the
+ * swatch lets a brand hex be pasted straight in.
+ */
+function ColorField({ value, onChange, placeholder, disabled }) {
+  return (
+    <Space>
+      <ColorPicker
+        value={value || undefined}
+        format="hex"
+        disabledAlpha
+        disabled={disabled}
+        onChange={(c) => onChange?.(c.toHexString().toLowerCase())}
+      />
+      <Input
+        style={{ width: 140 }}
+        placeholder={placeholder || '#RRGGBB'}
+        value={value ?? ''}
+        disabled={disabled}
+        onChange={(e) => onChange?.(e.target.value)}
+      />
+    </Space>
+  );
+}
 
 /**
  * Render a list of field configs as AntD Form.Items. Shared by ResourceManager
@@ -76,6 +104,19 @@ export default function FormFields({ fields }) {
                   options={f.options}
                   loading={f.loading}
                 />
+              </Form.Item>
+            );
+          case 'color':
+            return (
+              <Form.Item {...itemProps}>
+                <ColorField placeholder={f.placeholder} />
+              </Form.Item>
+            );
+          case 'image':
+            // Value is the confirmed S3 key; `slot` picks the typed upload slot.
+            return (
+              <Form.Item {...itemProps}>
+                <ImageUploadField slot={f.slot} />
               </Form.Item>
             );
           case 'tags':

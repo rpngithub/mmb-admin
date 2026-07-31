@@ -15,8 +15,8 @@ import PlansPage from './pages/PlansPage';
 import AppSettingsPage from './pages/AppSettingsPage';
 import TemplateCategoriesPage from './pages/TemplateCategoriesPage';
 import BusinessCategoriesPage from './pages/BusinessCategoriesPage';
-import ThemeGroupsPage from './pages/ThemeGroupsPage';
-import ThemesPage from './pages/ThemesPage';
+import BrandSeriesPage from './pages/BrandSeriesPage';
+import VariantsPage from './pages/VariantsPage';
 import AssetsPage from './pages/AssetsPage';
 import AssetCategoriesPage from './pages/AssetCategoriesPage';
 import TemplateSizesPage from './pages/TemplateSizesPage';
@@ -75,7 +75,7 @@ export default function AppRouter() {
             </RequirePermission>
           }
         />
-        {/* Bulk CSV import — self-gates permission (needs read on categories OR themes). */}
+        {/* Bulk CSV import — self-gates permission (needs read on categories OR variants). */}
         <Route path="bulk-import" element={<BulkImportPage />} />
         <Route
           path="activity-logs"
@@ -102,10 +102,10 @@ export default function AppRouter() {
                   <TemplateCategoriesPage />
                 ) : r.key === 'businessCategories' ? (
                   <BusinessCategoriesPage />
-                ) : r.key === 'themeGroups' ? (
-                  <ThemeGroupsPage />
-                ) : r.key === 'themes' ? (
-                  <ThemesPage />
+                ) : r.key === 'brandSeries' ? (
+                  <BrandSeriesPage />
+                ) : r.key === 'variants' ? (
+                  <VariantsPage />
                 ) : r.key === 'assets' ? (
                   <AssetsPage />
                 ) : r.key === 'assetCategories' ? (

@@ -33,6 +33,8 @@ export default function TagSelect({ value, onChange }) {
     <Select
       mode="multiple"
       allowClear
+      // Explicit so it fills its container outside a Form.Item too (brand series).
+      style={{ width: '100%' }}
       value={value}
       onChange={onChange}
       options={options}

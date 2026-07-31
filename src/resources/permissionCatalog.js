@@ -13,7 +13,15 @@ export const PERMISSION_CATALOG = [
   { domain: 'roles', label: 'Roles', actions: ALL },
   { domain: 'templates', label: 'Templates', actions: ALL },
   { domain: 'categories', label: 'Categories', hint: 'template & industry', actions: ALL },
-  { domain: 'themes', label: 'Themes', hint: 'themes & groups', actions: ALL },
+  // The old single `themes` key is gone: variants (and their badges) and brand
+  // series (and their style personalities + colours) are now separate domains.
+  { domain: 'variants', label: 'Variants', hint: 'variants & badges', actions: ALL },
+  {
+    domain: 'brand_series',
+    label: 'Brand Series',
+    hint: 'series, style personalities & colours',
+    actions: ALL,
+  },
   { domain: 'sizes', label: 'Template Sizes', actions: ALL },
   { domain: 'tags', label: 'Tags', actions: ALL },
   { domain: 'assets', label: 'Assets', hint: 'assets & categories', actions: ALL },
