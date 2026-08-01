@@ -2,6 +2,9 @@ import dayjs from 'dayjs';
 
 const HIDDEN_KEYS = new Set(['id', 'uid', 'created_at', 'updated_at', 'deleted_at']);
 
+// The API returns flags as 1/0, "1"/"0" or true/false depending on the endpoint.
+const isTrue = (v) => v === true || v === 1 || v === '1';
+
 /**
  * Guess a field config from a sample value (used when a resource has no explicit
  * `fields` config — a first-pass editor inferred from GET / data).
@@ -55,19 +58,20 @@ export function toFormValues(record, fields) {
   for (const f of fields) {
     const v = record?.[f.name];
     if (v === undefined || v === null) {
-      out[f.name] = f.type === 'switch' ? Boolean(v) : undefined;
+      out[f.name] = f.type === 'switch' ? false : undefined;
       continue;
     }
     if (f.type === 'date') out[f.name] = dayjs(v).isValid() ? dayjs(v) : undefined;
     else if (f.type === 'json') out[f.name] = typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-    else if (f.type === 'switch') out[f.name] = Boolean(v);
+    else if (f.type === 'switch') out[f.name] = isTrue(v);
     else out[f.name] = v;
   }
   return out;
 }
 
 /**
- * Convert form values back into an API payload (ISO dates, parsed JSON).
+ * Convert form values back into an API payload (ISO dates, parsed JSON, 0|1
+ * flags — the API rejects booleans on switch fields such as `is_active`).
  * Throws on invalid JSON so the caller can surface a validation error.
  */
 export function fromFormValues(values, fields) {
@@ -75,7 +79,9 @@ export function fromFormValues(values, fields) {
   for (const f of fields) {
     if (!(f.name in out)) continue;
     const v = out[f.name];
-    if (f.type === 'date') {
+    if (f.type === 'switch') {
+      out[f.name] = v ? 1 : 0;
+    } else if (f.type === 'date') {
       out[f.name] = v && dayjs.isDayjs(v) ? v.toISOString() : v || null;
     } else if (f.type === 'json') {
       if (typeof v === 'string' && v.trim() !== '') {
