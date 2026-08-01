@@ -11,6 +11,7 @@ import {
   Space,
   Spin,
   Alert,
+  Tag,
   Typography,
   App,
 } from 'antd';
@@ -19,6 +20,7 @@ import ImageUploadField from './ImageUploadField';
 
 const { Text, Paragraph } = Typography;
 const isTrue = (v) => v === true || v === 1 || v === '1';
+const isActiveStatus = (s) => s === 'active';
 
 /**
  * Tabbed variant editor for the premium (plan-scoped) surface:
@@ -375,12 +377,32 @@ function BusinessPanel({ uid }) {
 
 // ---- Templates — assigned templates (full replace) -------------------------
 
+// Only `active` templates may be newly assigned, but a template can be assigned
+// while active and deactivated later. Those no longer come back from
+// `?status=active`, so the already-assigned rows are unioned into the options —
+// without them the Select would render a bare numeric id and the next save
+// (a full replace) would silently unassign them.
 function TemplatesPanel({ uid }) {
   const { message } = App.useApp();
   const { data: full, isFetching } = adminApi.endpoints.variantTemplates.useQuery(uid, {
     skip: !uid,
   });
-  const { data: templatesPage } = adminApi.endpoints.templatesList.useQuery({ limit: 1000 });
+
+  // Server-side search: `limit` caps at 100, so client-side filtering goes stale
+  // as soon as the catalogue outgrows one page.
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const { data: templatesPage, isFetching: optionsLoading } =
+    adminApi.endpoints.templatesList.useQuery({
+      status: 'active',
+      search: debouncedSearch || undefined,
+      limit: 100,
+    });
   const [setTemplates, { isLoading: saving }] =
     adminApi.endpoints.variantSetTemplates.useMutation();
 
@@ -390,14 +412,31 @@ function TemplatesPanel({ uid }) {
     if (full) setValue((full.Templates || []).map((t) => t.id));
   }, [full]);
 
-  const options = useMemo(
-    () =>
-      (templatesPage?.items || []).map((t) => ({
-        label: t.template_type ? `${t.name} · ${t.template_type}` : t.name,
-        value: t.id,
-      })),
-    [templatesPage],
-  );
+  const options = useMemo(() => {
+    const toOption = (t) => ({
+      label: (
+        <span>
+          {t.template_type ? `${t.name} · ${t.template_type}` : t.name}
+          {!isActiveStatus(t.status) && (
+            <Tag color="default" style={{ marginInlineStart: 8 }}>
+              {t.status || 'inactive'}
+            </Tag>
+          )}
+        </span>
+      ),
+      value: t.id,
+    });
+    const seen = new Set();
+    const out = [];
+    // Active matches first, then any assigned template the filter left out so
+    // selections never lose their label (or get dropped on save).
+    for (const t of [...(templatesPage?.items || []), ...(full?.Templates || [])]) {
+      if (!t || seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(toOption(t));
+    }
+    return out;
+  }, [templatesPage, full]);
 
   const save = async () => {
     try {
@@ -413,7 +452,9 @@ function TemplatesPanel({ uid }) {
       <Space direction="vertical" style={{ width: '100%' }} size={14}>
         <Paragraph type="secondary" style={{ margin: 0 }}>
           The templates assigned to this variant (full replace). These become available to
-          subscribers on the variant’s entitled plans.
+          subscribers on the variant’s entitled plans. Only <Text strong>active</Text> templates can
+          be picked — an already-assigned template that was since deactivated stays listed with its
+          status so you can remove it deliberately.
         </Paragraph>
         <div>
           <Text type="secondary">Assigned templates</Text>
@@ -424,7 +465,11 @@ function TemplatesPanel({ uid }) {
             value={value}
             onChange={setValue}
             options={options}
-            optionFilterProp="label"
+            showSearch
+            filterOption={false}
+            onSearch={setSearch}
+            loading={optionsLoading}
+            notFoundContent={optionsLoading ? <Spin size="small" /> : 'No active templates found'}
             placeholder="Select templates to assign"
             maxTagCount="responsive"
           />
