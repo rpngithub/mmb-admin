@@ -10,6 +10,7 @@ export default function BusinessCategoriesPage() {
       iconSlot="business_category_icon"
       thumbnailSlot="business_category_thumbnail"
       hasTags
+      hasRelated
       deleteNote="Businesses/products in this industry will have their industry cleared (set to NULL); tag links are removed."
     />
   );

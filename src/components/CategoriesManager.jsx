@@ -25,10 +25,14 @@ import { usePermissions } from '../features/auth/usePermissions';
 import ImageUploadField from './ImageUploadField';
 import ImageThumb from './ImageThumb';
 import TagSelect from './TagSelect';
+import RelatedIndustriesField from './RelatedIndustriesField';
 
 const { Title, Text } = Typography;
 
 const isTrue = (v) => v === true || v === 1 || v === '1';
+
+// Order-sensitive id comparison — a drag-reorder alone is a real change.
+const sameOrder = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 // ---- flat list → tree (children keyed by parent_id === id) ------------------
 function toTree(rows) {
@@ -82,7 +86,8 @@ function toParentTree(rows, excludeId) {
  * Shared CRUD surface for the two hierarchical category resources (template &
  * business). Renders a tree table, an editor drawer with image-upload fields and
  * a parent picker, and a reparent-aware delete flow. Business categories add a
- * tag multi-select (persisted via the dedicated PUT …/tags route).
+ * tag multi-select (persisted via the dedicated PUT …/tags route) and the
+ * ordered "Related industries" block (PUT …/related).
  */
 export default function CategoriesManager({
   resourceKey,
@@ -94,6 +99,7 @@ export default function CategoriesManager({
   hasImages = true,
   hasHomepage = false,
   hasTags = false,
+  hasRelated = false,
   deleteNote,
 }) {
   const perms = usePermissions();
@@ -102,6 +108,10 @@ export default function CategoriesManager({
   const canCreate = perms.can(permission, 'create');
   const canUpdate = perms.can(permission, 'update');
   const canDelete = perms.can(permission, 'delete');
+  // Related industries live under the same permission domain as the rest of the
+  // form: read to see the block, update to save it.
+  const relatedRead = hasRelated && perms.canRead(permission);
+  const relatedWrite = hasRelated && canUpdate;
 
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState({ open: false, record: null });
@@ -314,6 +324,8 @@ export default function CategoriesManager({
         hasImages={hasImages}
         hasHomepage={hasHomepage}
         hasTags={hasTags}
+        relatedRead={relatedRead}
+        relatedWrite={relatedWrite}
         onClose={() => setEditor({ open: false, record: null })}
         onSaved={refetch}
       />
@@ -365,6 +377,8 @@ function CategoryEditor({
   hasImages,
   hasHomepage,
   hasTags,
+  relatedRead,
+  relatedWrite,
   onClose,
   onSaved,
 }) {
@@ -376,6 +390,22 @@ function CategoryEditor({
   const [createTrigger] = adminApi.endpoints[`${resourceKey}Create`].useMutation();
   const [updateTrigger] = adminApi.endpoints[`${resourceKey}Update`].useMutation();
   const [setTags] = adminApi.endpoints.businessCategorySetTags.useMutation();
+  const [setRelated] = adminApi.endpoints.businessCategorySetRelated.useMutation();
+  const [refetchRows] = adminApi.endpoints[`${resourceKey}List`].useLazyQuery();
+
+  // Related industries are a separate endpoint, so they live outside the Form:
+  // `relatedIds` is the ordered payload, `relatedBaseline` is what the server
+  // last confirmed (so a no-op PUT — which still writes an activity log — is
+  // skipped). A new industry has no uid yet, so its GET is skipped and the
+  // baseline is [].
+  const [relatedIds, setRelatedIds] = useState([]);
+  const [relatedBaseline, setRelatedBaseline] = useState([]);
+  const [relatedError, setRelatedError] = useState(null);
+
+  const { data: related, isFetching: relatedLoading } =
+    adminApi.endpoints.businessCategoryRelated.useQuery(record?.uid, {
+      skip: !open || !relatedRead || !record?.uid,
+    });
 
   const parentTree = useMemo(() => toParentTree(rows, record?.id), [rows, record]);
 
@@ -397,6 +427,47 @@ function CategoryEditor({
       form.setFieldsValue({ is_active: true, display_order: 0, show_in_homepage: false, tag_ids: [] });
     }
   }, [open, record, form]);
+
+  useEffect(() => {
+    if (!open) return;
+    setRelatedError(null);
+    if (!record) {
+      setRelatedIds([]);
+      setRelatedBaseline([]);
+    }
+  }, [open, record]);
+
+  useEffect(() => {
+    if (!open || !record) return;
+    // RelatedIndustries arrives already sorted in the curated order — take it as
+    // given, never re-sort by name or id.
+    const ids = (related?.RelatedIndustries || []).map((r) => r.id);
+    setRelatedIds(ids);
+    setRelatedBaseline(ids);
+  }, [open, record, related]);
+
+  /**
+   * A 404 means one or more ids no longer exist — another admin deleted an
+   * industry since these options were cached. It rejects the WHOLE batch, so
+   * nothing was written and the saved block is still intact. Refetch the list,
+   * drop the ids that went away, and name them.
+   */
+  const recoverStaleIds = async () => {
+    let fresh;
+    try {
+      fresh = await refetchRows(undefined, false).unwrap();
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(fresh)) return null;
+    const alive = new Set(fresh.map((r) => r.id));
+    const gone = relatedIds.filter((id) => !alive.has(id));
+    if (gone.length === 0) return null;
+    // `rows` is the pre-refetch copy, so it still carries the deleted names.
+    const names = gone.map((id) => rows.find((r) => r.id === id)?.name || `#${id}`);
+    setRelatedIds((ids) => ids.filter((id) => alive.has(id)));
+    return names;
+  };
 
   const handleSubmit = async () => {
     let values;
@@ -438,7 +509,53 @@ function CategoryEditor({
           message.error('Category saved, but updating its tags failed.');
         }
       }
-      message.success(`${singular} ${isEdit ? 'updated' : 'created'}`);
+
+      // Same deal for related industries, and likewise NOT in one transaction
+      // with the scalar write — so a failure here says so specifically.
+      let relatedFailed = false;
+      if (relatedWrite && uid && !sameOrder(relatedIds, relatedBaseline)) {
+        const verb = isEdit ? 'saved' : 'created';
+        try {
+          const result = await setRelated({ uid, related_industry_ids: relatedIds }).unwrap();
+          setRelatedBaseline((result?.RelatedIndustries || []).map((r) => r.id));
+        } catch (err) {
+          relatedFailed = true;
+          const gone = err?.status === 404 ? await recoverStaleIds() : null;
+          if (gone) {
+            const list = gone.join(', ');
+            setRelatedError({
+              message: `${list} ${gone.length > 1 ? 'no longer exist' : 'no longer exists'} — removed from the list. Save again to apply.`,
+              details: [],
+            });
+            message.error(
+              `${singular} ${verb}, but the related industries could not be updated: ${list} ${
+                gone.length > 1 ? 'were' : 'was'
+              } deleted by someone else.`,
+            );
+          } else {
+            setRelatedError({
+              message: err?.message || 'Could not update the related industries.',
+              details: err?.details || [],
+            });
+            message.error(
+              `${singular} ${verb}, but the related industries could not be updated${
+                err?.message ? `: ${err.message}` : '.'
+              }`,
+            );
+          }
+        }
+      }
+
+      // Editing: the scalars are already saved, so keep the drawer open for the
+      // editor to fix the block (esp. after a 404 prune) and hit Save again —
+      // that re-PATCHes the unchanged scalars, which only costs an extra
+      // activity-log entry. Creating: the industry now exists, so closing is the
+      // only safe move — reopening it would POST a duplicate.
+      if (relatedFailed && isEdit) {
+        onSaved?.();
+        return;
+      }
+      if (!relatedFailed) message.success(`${singular} ${isEdit ? 'updated' : 'created'}`);
       onSaved?.();
       onClose();
     } catch {
@@ -516,6 +633,27 @@ function CategoryEditor({
         {hasTags && (
           <Form.Item name="tag_ids" label="Tags">
             <TagSelect />
+          </Form.Item>
+        )}
+
+        {relatedRead && (
+          <Form.Item
+            label="Related industries"
+            extra="The block of internal links at the bottom of this industry's public page. Links are one-way — adding one here does not add this industry to its block — and drag order is the order they render in."
+          >
+            <RelatedIndustriesField
+              value={relatedIds}
+              onChange={(next) => {
+                setRelatedIds(next);
+                setRelatedError(null);
+              }}
+              rows={rows}
+              selfId={record?.id}
+              fallbackRows={related?.RelatedIndustries}
+              disabled={!relatedWrite}
+              loading={relatedLoading}
+              error={relatedError}
+            />
           </Form.Item>
         )}
       </Form>
