@@ -400,6 +400,42 @@ export const adminApi = createApi({
       ],
     }),
 
+    // ---- Industry ↔ related industries (curated SEO block) ----------------
+    // The block of internal links at the bottom of an industry's public landing
+    // page. Two properties drive the whole UI:
+    //   • ONE-WAY — Restaurant → [Cafe] does NOT put Restaurant in Cafe's block.
+    //     A mutual link is two separate edits, on purpose.
+    //   • ORDERED — array position IS the order the block renders in, and the GET
+    //     returns RelatedIndustries already sorted, so never re-sort it.
+    // The PUT is a full replace over numeric `id`s (NOT uids); [] clears the
+    // block, ids must be unique, and `related_industry_ids` must be the ONLY key
+    // (unknown keys → 400; the `related_category_ids` alias is deprecated). Its
+    // response echoes the GET shape, so we patch that cache entry from it instead
+    // of refetching. No scalar column changes → the industry list/detail queries
+    // are deliberately NOT invalidated. Silent: the editor renders error.message
+    // and details[] on the field, and maps 404 to a stale-options recovery.
+    businessCategoryRelated: builder.query({
+      query: (uid) => ({ url: `/admin/business-categories/${uid}/related` }),
+      providesTags: (_r, _e, uid) => [{ type: 'businessCategories', id: `${uid}:related` }],
+    }),
+    businessCategorySetRelated: builder.mutation({
+      query: ({ uid, related_industry_ids }) => ({
+        url: `/admin/business-categories/${uid}/related`,
+        method: 'PUT',
+        body: { related_industry_ids },
+      }),
+      extraOptions: { silent: true },
+      async onQueryStarted({ uid }, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(adminApi.util.updateQueryData('businessCategoryRelated', uid, () => data));
+        } catch {
+          // Rejected → nothing was written (a 404 rejects the WHOLE batch), so the
+          // cached block still matches the server. Never patch optimistically.
+        }
+      },
+    }),
+
     // ---- Template categories: homepage drag-reorder -----------------------
     // Bulk, sibling-scoped reorder. Send the FULL ordered list of ONE sibling
     // group's uids (all sharing the same parent_id); the server assigns
@@ -795,6 +831,8 @@ export const {
   useUploadPresignMutation,
   useUploadConfirmMutation,
   useBusinessCategorySetTagsMutation,
+  useBusinessCategoryRelatedQuery,
+  useBusinessCategorySetRelatedMutation,
   useTemplateCategoriesReorderMutation,
   useAssetsFilteredQuery,
   useAssetTagsQuery,
