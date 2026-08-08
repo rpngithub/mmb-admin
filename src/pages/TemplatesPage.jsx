@@ -12,7 +12,7 @@ import { useTemplatesListQuery, useTemplateRemoveMutation, adminApi } from '../f
 import { usePermissions } from '../features/auth/usePermissions';
 import { checkRowCompleteness } from '../lib/templateCompleteness';
 import ImageThumb from '../components/ImageThumb';
-import TemplateEditorDrawer from '../components/TemplateEditorDrawer';
+import TemplateEditorDrawer, { ANY_LANGUAGE_LABEL } from '../components/TemplateEditorDrawer';
 
 const { Title, Text } = Typography;
 
@@ -31,6 +31,7 @@ const EMPTY_FILTERS = {
   size_id: undefined,
   tag_ids: [],
   is_premium: undefined,
+  language_id: undefined,
 };
 
 /**
@@ -77,6 +78,20 @@ export default function TemplatesPage() {
   const { data: variants } = adminApi.endpoints.variantsList.useQuery();
   const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
   const { data: tags } = adminApi.endpoints.tagsList.useQuery();
+  // Unfiltered here (unlike the editor's picker): a template may still carry a
+  // language that was since switched off, and finding those to retag is exactly
+  // what this filter is for. Skipped when the admin can't read languages, so the
+  // page doesn't fire a 403 at them.
+  const canReadLanguages = perms.canRead('languages');
+  const { data: languages } = adminApi.endpoints.languagesList.useQuery(undefined, {
+    skip: !canReadLanguages,
+  });
+
+  const languageById = useMemo(() => {
+    const m = new Map();
+    (languages || []).forEach((l) => m.set(l.id, l));
+    return m;
+  }, [languages]);
 
   const queryArg = useMemo(
     () => ({
@@ -93,6 +108,7 @@ export default function TemplatesPage() {
       size_id: filters.size_id,
       tags: filters.tag_ids.length ? filters.tag_ids.join(',') : undefined,
       is_premium: filters.is_premium,
+      language_id: filters.language_id,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     }),
@@ -143,6 +159,30 @@ export default function TemplatesPage() {
       key: 'template_type',
       width: 100,
       render: (v) => (v ? <Tag>{v}</Tag> : <Text type="secondary">—</Text>),
+    },
+    {
+      // NULL is language-NEUTRAL (shown to everyone), not "untagged" — but every
+      // template started out NULL, so the neutral tag is also how you spot the
+      // ones nobody has been through yet.
+      title: 'Language',
+      key: 'language',
+      width: 150,
+      render: (_v, r) => {
+        if (r.language_id == null) {
+          return (
+            <Tooltip title="Language-neutral: no text, or symbols only. Shown to every user whatever they picked.">
+              <Tag>{ANY_LANGUAGE_LABEL}</Tag>
+            </Tooltip>
+          );
+        }
+        const lang = r.Language || languageById.get(r.language_id);
+        if (!lang) return <Tag color="blue">#{r.language_id}</Tag>;
+        return (
+          <Tooltip title={lang.name}>
+            <Tag color="blue">{lang.native_name || lang.name}</Tag>
+          </Tooltip>
+        );
+      },
     },
     {
       title: 'Status',
@@ -319,6 +359,21 @@ export default function TemplatesPage() {
           onChange={(v) => setFilter('tag_ids', v)}
           options={byId(tags)}
         />
+        {canReadLanguages && (
+          <Select
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            placeholder="Language"
+            style={{ width: 170 }}
+            value={filters.language_id}
+            onChange={(v) => setFilter('language_id', v)}
+            options={(languages || []).map((l) => ({
+              label: `${l.native_name} (${l.name})`,
+              value: l.id,
+            }))}
+          />
+        )}
         <Select
           allowClear
           placeholder="Premium"

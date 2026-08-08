@@ -234,6 +234,35 @@ export const RESOURCES = [
     ],
   }),
 
+  // CONTENT languages — the list a user picks "Preferred Languages" from, which
+  // then filters their template browse. NOT the app's UI language. Dedicated page
+  // (src/pages/LanguagesPage.jsx, wired in router.jsx): display_order is set by
+  // drag-reorder (PATCH …/reorder), not by a form field, and `code` is a stable
+  // key clients hold so it is read-only once created. This config only supplies
+  // nav/permission/endpoints; its `fields`/`columns` are unused.
+  resource({
+    key: 'languages',
+    name: 'Languages',
+    title: 'Language',
+    path: '/admin/languages',
+    permission: 'languages',
+    group: 'Catalog',
+  }),
+
+  // The curated font library users pick from in Brand Kit → Fonts. Dedicated page
+  // (src/pages/FontsPage.jsx → FontEditorDrawer, wired in router.jsx): a family is
+  // built in three steps (create → upload files → tag script coverage), both
+  // sub-resources are full-replace PUTs, and the Flutter-vs-web dual-format rule
+  // needs its own gate. This config only supplies nav/permission/endpoints.
+  resource({
+    key: 'fonts',
+    name: 'Fonts',
+    title: 'Font',
+    path: '/admin/fonts',
+    permission: 'fonts',
+    group: 'Catalog',
+  }),
+
   // Template Sizes have a dedicated page (src/pages/TemplateSizesPage.jsx, wired
   // in router.jsx) that sends the exact strict types. This config only supplies
   // nav/permission/endpoints.
