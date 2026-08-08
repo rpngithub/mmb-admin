@@ -25,6 +25,13 @@ export const PERMISSION_CATALOG = [
   { domain: 'sizes', label: 'Template Sizes', actions: ALL },
   { domain: 'tags', label: 'Tags', actions: ALL },
   { domain: 'assets', label: 'Assets', hint: 'assets & categories', actions: ALL },
+  { domain: 'languages', label: 'Languages', hint: 'content languages', actions: ALL },
+  { domain: 'fonts', label: 'Fonts', hint: 'library fonts, files & scripts', actions: ALL },
+  // Read + delete only: feedback cannot be created or edited from the admin side
+  // (POST/PATCH are 404 by design). Granted to SUPER_ADMIN only on the backend
+  // because every row carries the submitter's name, phone and email — listing it
+  // here lets a role be *seen* to have it, not silently acquire it.
+  { domain: 'feedback', label: 'Feedback', hint: 'super admin only — carries user contact details', actions: ['read', 'delete'] },
   { domain: 'events', label: 'Special Events', actions: ALL },
   { domain: 'banners', label: 'Banners', actions: ALL },
   { domain: 'faqs', label: 'FAQs', hint: 'faqs & categories', actions: ALL },

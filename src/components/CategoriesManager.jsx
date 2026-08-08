@@ -100,6 +100,7 @@ export default function CategoriesManager({
   hasHomepage = false,
   hasTags = false,
   hasRelated = false,
+  hasStatus = false,
   deleteNote,
 }) {
   const perms = usePermissions();
@@ -158,7 +159,21 @@ export default function CategoriesManager({
   };
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name', render: (v) => <Text strong>{v}</Text> },
+    {
+      title: 'Name',
+      dataIndex: 'name',
+      key: 'name',
+      render: (v, record) => (
+        <Space size={6}>
+          <Text strong>{v}</Text>
+          {/* Anything not approved is a user suggestion that hasn't been through
+              moderation — invisible everywhere public until it is. */}
+          {hasStatus && record.status && record.status !== 'approved' && (
+            <Tag color={record.status === 'rejected' ? 'red' : 'gold'}>{record.status}</Tag>
+          )}
+        </Space>
+      ),
+    },
     // Read-only public URL key, server-generated from the name on create.
     {
       title: 'Slug',
@@ -324,6 +339,7 @@ export default function CategoriesManager({
         hasImages={hasImages}
         hasHomepage={hasHomepage}
         hasTags={hasTags}
+        hasStatus={hasStatus}
         relatedRead={relatedRead}
         relatedWrite={relatedWrite}
         onClose={() => setEditor({ open: false, record: null })}
@@ -377,6 +393,7 @@ function CategoryEditor({
   hasImages,
   hasHomepage,
   hasTags,
+  hasStatus,
   relatedRead,
   relatedWrite,
   onClose,
@@ -591,6 +608,26 @@ function CategoryEditor({
         {isEdit && record?.slug && (
           <Form.Item label="Slug" extra="Public URL key — auto-generated from the name; not editable.">
             <Text code>{record.slug}</Text>
+          </Form.Item>
+        )}
+
+        {/* Read-only on purpose: `status` is the moderation verdict and belongs
+            in the Pending suggestions queue, not in the ordinary form. Note it is
+            NOT the same thing as Active below — Active is whether an approved
+            industry is currently offered, which an admin may retire freely
+            without it dropping back into moderation. */}
+        {hasStatus && isEdit && record?.status && (
+          <Form.Item
+            label="Moderation status"
+            extra={
+              record.status === 'approved'
+                ? 'Approved and publicly visible. Use Active below to retire it — that does not send it back to moderation.'
+                : 'Invisible everywhere public until approved. Approve or reject it on the “Pending suggestions” tab.'
+            }
+          >
+            <Tag color={record.status === 'approved' ? 'green' : record.status === 'rejected' ? 'red' : 'gold'}>
+              {record.status}
+            </Tag>
           </Form.Item>
         )}
 

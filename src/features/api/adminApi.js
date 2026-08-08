@@ -20,6 +20,7 @@ const SPECIAL_TAGS = [
   'BillingOptions',
   'PlanFeatures',
   'CouponPlans',
+  'Feedback',
 ];
 
 /**
@@ -793,6 +794,172 @@ export const adminApi = createApi({
       },
     }),
 
+    // ---- Languages (CONTENT languages) --------------------------------------
+    // The list a user picks "Preferred Languages" from; their template browse is
+    // then filtered to those. NOT the app's UI language.
+    //
+    // The generic languagesList is unfiltered on purpose — the management screen
+    // must see the inactive ones to reactivate them. This variant passes
+    // ?is_active=1 for the *pickers* (template language, font script coverage),
+    // which must only offer live languages. Shares the `languages` tag so every
+    // language mutation refetches both.
+    languagesFiltered: builder.query({
+      query: (params = {}) => ({ url: '/admin/languages', params: cleanParams(params) }),
+      providesTags: (result) =>
+        Array.isArray(result)
+          ? [
+              ...result.map((l) => ({ type: 'languages', id: l.uid })),
+              { type: 'languages', id: 'LIST' },
+            ]
+          : [{ type: 'languages', id: 'LIST' }],
+    }),
+
+    // Dedicated silent create/update so the editor can map 409 CONFLICT (`code`
+    // and `name` are both unique) and 400 VALIDATION_ERROR (details[].field) onto
+    // the offending form field instead of the generic global notification.
+    // `code` is a stable key clients hold, so update never sends it.
+    languageCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/languages', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'languages', id: 'LIST' }],
+    }),
+    languageUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/languages/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'languages', id: uid },
+        { type: 'languages', id: 'LIST' },
+      ],
+    }),
+
+    // Bulk reorder — send the FULL ordered list of uids; array position becomes
+    // display_order. That order IS what the app's language picker renders, so this
+    // is a real feature, not a nicety. Silent: the page patches the cache
+    // optimistically and rolls back + toasts error.message on failure.
+    languagesReorder: builder.mutation({
+      query: (ids) => ({ url: '/admin/languages/reorder', method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'languages', id: 'LIST' }],
+    }),
+
+    // ---- Fonts (curated library) --------------------------------------------
+    // LIBRARY fonts only. Users can upload their own; those live in the same table
+    // but are private to them and are never returned here. A row arrives with its
+    // FontFiles[] ({weight,style,format,s3_key}) and Languages[] already joined —
+    // which is what lets the list column flag the dual-format problem per family.
+    // The list itself is the generic (unfiltered) fontsList: the screen manages
+    // inactive families too, and its drag-reorder must send EVERY uid.
+    //
+    // Silent create/update so the editor can map 409 (duplicate `family` — unique
+    // among library fonts only) onto the family field.
+    fontCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/fonts', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'fonts', id: 'LIST' }],
+    }),
+    fontUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/fonts/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'fonts', id: uid },
+        { type: 'fonts', id: 'LIST' },
+      ],
+    }),
+    fontsReorder: builder.mutation({
+      query: (ids) => ({ url: '/admin/fonts/reorder', method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'fonts', id: 'LIST' }],
+    }),
+
+    // Both sub-resources are FULL REPLACES — send every file / language the family
+    // should end up with, not just the new ones. Files are (weight, style, format,
+    // s3_key) rows; s3_key comes from the presign→PUT→confirm flow with target
+    // { type:'image_slot', slot:'font_file' } and must land under `fonts/`.
+    // Silent — the editor owns its messaging and error mapping.
+    fontSetFiles: builder.mutation({
+      query: ({ uid, files }) => ({
+        url: `/admin/fonts/${uid}/files`,
+        method: 'PUT',
+        body: { files },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'fonts', id: uid },
+        { type: 'fonts', id: 'LIST' },
+      ],
+    }),
+    // "This font can DRAW these scripts". EMPTY means unspecified → the font is
+    // offered for EVERY language, so empty is permissive, not restrictive.
+    fontSetLanguages: builder.mutation({
+      query: ({ uid, language_ids }) => ({
+        url: `/admin/fonts/${uid}/languages`,
+        method: 'PUT',
+        body: { language_ids },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'fonts', id: uid },
+        { type: 'fonts', id: 'LIST' },
+      ],
+    }),
+
+    // ---- Industry suggestions (moderation queue) ----------------------------
+    // Server-filtered industries list — the queue passes ?status=pending. The
+    // generic businessCategoriesList is unfiltered (and is what the Industries
+    // tree renders); this shares the `businessCategories` tag so an approve/reject
+    // refetches both the queue and the tree.
+    businessCategoriesFiltered: builder.query({
+      query: (params = {}) => ({
+        url: '/admin/business-categories',
+        params: cleanParams(params),
+      }),
+      providesTags: (result) =>
+        Array.isArray(result)
+          ? [
+              ...result.map((c) => ({ type: 'businessCategories', id: c.uid })),
+              { type: 'businessCategories', id: 'LIST' },
+            ]
+          : [{ type: 'businessCategories', id: 'LIST' }],
+    }),
+
+    // The moderation verdict, and the ONLY way to approve. `status` and
+    // `is_active` are deliberately separate: sending { status:'approved' } flips
+    // is_active to 1 for you, while sending is_active by hand does NOT approve —
+    // that's what lets an admin retire an approved industry later without it
+    // dropping back into the queue. Silent so the queue can report per-row
+    // failures across a bulk action instead of N global notifications.
+    businessCategorySetStatus: builder.mutation({
+      query: ({ uid, status }) => ({
+        url: `/admin/business-categories/${uid}`,
+        method: 'PATCH',
+        body: { status },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'businessCategories', id: uid },
+        { type: 'businessCategories', id: 'LIST' },
+      ],
+    }),
+
+    // ---- Feedback (read + delete only) --------------------------------------
+    // In-app 1–5 emoji rating plus an optional note, signed-in users only. There
+    // is NO create and NO edit: POST /admin/feedback returns 404 by design,
+    // because an editable record of what a user said is not a record. Rows carry
+    // the submitter's name/phone/email, hence the super_admin-only permission.
+    feedbackList: builder.query({
+      query: (params = {}) => ({ url: '/admin/feedback', params: cleanParams(params) }),
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: [{ type: 'Feedback', id: 'LIST' }],
+    }),
+    // Spam removal only — the page confirms first.
+    feedbackDelete: builder.mutation({
+      query: (uid) => ({ url: `/admin/feedback/${uid}`, method: 'DELETE' }),
+      invalidatesTags: [{ type: 'Feedback', id: 'LIST' }],
+    }),
+
     // ---- Generic CRUD resources (generated from config) -------------------
     ...buildGenericEndpoints(builder),
   }),
@@ -879,4 +1046,21 @@ export const {
   useCouponUpdateMutation,
   useCouponPlansQuery,
   useCouponSetPlansMutation,
+  // Languages (content languages)
+  useLanguagesFilteredQuery,
+  useLanguageCreateMutation,
+  useLanguageUpdateMutation,
+  useLanguagesReorderMutation,
+  // Fonts (curated library)
+  useFontCreateMutation,
+  useFontUpdateMutation,
+  useFontsReorderMutation,
+  useFontSetFilesMutation,
+  useFontSetLanguagesMutation,
+  // Industry suggestions (moderation queue)
+  useBusinessCategoriesFilteredQuery,
+  useBusinessCategorySetStatusMutation,
+  // Feedback
+  useFeedbackListQuery,
+  useFeedbackDeleteMutation,
 } = adminApi;

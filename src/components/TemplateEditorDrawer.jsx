@@ -24,6 +24,7 @@ import {
   CheckOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
+import { usePermissions } from '../features/auth/usePermissions';
 import { checkTemplateCompleteness, FIELD_TO_KEY } from '../lib/templateCompleteness';
 import TemplateBundlePanel from './TemplateBundlePanel';
 import ImageThumb from './ImageThumb';
@@ -33,6 +34,16 @@ const { Text, Paragraph } = Typography;
 const TEMPLATE_TYPES = ['image', 'video', 'animated'];
 const STATUS_COLORS = { active: 'green', inactive: 'default', draft: 'gold' };
 const isTrue = (v) => v === true || v === 1 || v === '1';
+
+/**
+ * The empty language choice is MEANINGFUL, so it is never a blank row: NULL means
+ * language-NEUTRAL (a design with no text, or symbols only) and is shown to every
+ * user whatever they picked — it does not mean "not tagged yet". Getting it wrong
+ * costs in both directions: tagging a text-free design as English hides it from
+ * everyone else, and leaving a Tamil design as "Any" shows Tamil text to Hindi
+ * users. Exported so the list column renders the same wording.
+ */
+export const ANY_LANGUAGE_LABEL = 'Any / no text';
 
 /**
  * Tabbed template editor: Details (metadata-only create/update), Bundle (ZIP
@@ -123,11 +134,21 @@ function NeedsUid() {
 
 function DetailsForm({ uid, onCreated, onSaved }) {
   const { message } = App.useApp();
+  const perms = usePermissions();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(uid);
 
   const { data: categories } = adminApi.endpoints.templateCategoriesList.useQuery();
+  // Only live languages may be assigned; the picker must not offer a language
+  // that has been switched off in the app. Skipped (and the field withheld) when
+  // the admin can't read languages, so we neither 403 nor let them blank out a
+  // tag they can't see.
+  const canReadLanguages = perms.canRead('languages');
+  const { data: languages } = adminApi.endpoints.languagesFiltered.useQuery(
+    { is_active: 1 },
+    { skip: !canReadLanguages },
+  );
   const { data: full, isFetching } = adminApi.endpoints.templateGet.useQuery(uid, { skip: !uid });
   const [createTemplate] = adminApi.endpoints.templateCreate.useMutation();
   const [updateTemplate] = adminApi.endpoints.templateUpdate.useMutation();
@@ -138,11 +159,14 @@ function DetailsForm({ uid, onCreated, onSaved }) {
         name: full.name,
         category_id: full.category_id ?? undefined,
         template_type: full.template_type ?? undefined,
+        // null is a real choice ("Any / no text"), so it maps to the null option
+        // rather than to an empty Select.
+        language_id: full.language_id ?? null,
         is_premium: isTrue(full.is_premium),
       });
     } else if (!isEdit) {
       form.resetFields();
-      form.setFieldsValue({ is_premium: false });
+      form.setFieldsValue({ is_premium: false, language_id: null });
     }
   }, [isEdit, full, form]);
 
@@ -161,6 +185,9 @@ function DetailsForm({ uid, onCreated, onSaved }) {
       template_type: values.template_type,
       is_premium: values.is_premium ? 1 : 0,
     };
+    // Omitted entirely when the picker isn't shown — sending null would silently
+    // clear a tag the admin was never able to see.
+    if (canReadLanguages) body.language_id = values.language_id ?? null;
     setSubmitting(true);
     try {
       if (isEdit) {
@@ -206,6 +233,28 @@ function DetailsForm({ uid, onCreated, onSaved }) {
             options={TEMPLATE_TYPES.map((t) => ({ label: t, value: t }))}
           />
         </Form.Item>
+        {canReadLanguages && (
+          <Form.Item
+            name="language_id"
+            label="Language"
+            extra={`Leave as “${ANY_LANGUAGE_LABEL}” for designs with no text. Otherwise pick the language the text is written in.`}
+          >
+            {/* No allowClear: the empty state is an explicit, labelled option,
+                not a cleared field — clearing to `undefined` would read as
+                "not set", which is precisely what NULL does not mean. */}
+            <Select
+              showSearch
+              optionFilterProp="label"
+              options={[
+                { label: ANY_LANGUAGE_LABEL, value: null },
+                ...(languages || []).map((l) => ({
+                  label: `${l.native_name} (${l.name})`,
+                  value: l.id,
+                })),
+              ]}
+            />
+          </Form.Item>
+        )}
         <Form.Item name="is_premium" label="Premium" valuePropName="checked">
           <Switch />
         </Form.Item>
@@ -405,12 +454,17 @@ function ChipList({ items }) {
 
 function PublishPanel({ uid, onSaved, onGoToTab }) {
   const { message } = App.useApp();
+  const perms = usePermissions();
   const { data: full, isFetching } = adminApi.endpoints.templateGet.useQuery(uid, { skip: !uid });
   const { data: relations, isFetching: relFetching } = adminApi.endpoints.templateRelations.useQuery(
     uid,
     { skip: !uid },
   );
   const { data: categories } = adminApi.endpoints.templateCategoriesList.useQuery();
+  const { data: languages } = adminApi.endpoints.languagesFiltered.useQuery(
+    { is_active: 1 },
+    { skip: !perms.canRead('languages') },
+  );
   const [updateTemplate, { isLoading }] = adminApi.endpoints.templateUpdate.useMutation();
 
   const status = full?.status || 'draft';
@@ -488,6 +542,20 @@ function PublishPanel({ uid, onSaved, onGoToTab }) {
                 key: 'type',
                 label: 'Type',
                 children: full?.template_type || <Text type="secondary">—</Text>,
+              },
+              {
+                key: 'language',
+                label: 'Language',
+                children: full?.language_id ? (
+                  (() => {
+                    const lang = (languages || []).find((l) => l.id === full.language_id);
+                    return lang ? `${lang.native_name} (${lang.name})` : `#${full.language_id}`;
+                  })()
+                ) : (
+                  <Tooltip title="Language-neutral — shown to every user regardless of their preferred languages.">
+                    <Tag>{ANY_LANGUAGE_LABEL}</Tag>
+                  </Tooltip>
+                ),
               },
               {
                 key: 'premium',

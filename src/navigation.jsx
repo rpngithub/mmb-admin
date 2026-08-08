@@ -15,6 +15,9 @@ import {
   BulbOutlined,
   TrophyOutlined,
   SkinOutlined,
+  GlobalOutlined,
+  FontSizeOutlined,
+  SmileOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -39,6 +42,8 @@ const ICON_BY_KEY = {
   colors: <BgColorsOutlined />,
   stylePersonalities: <BulbOutlined />,
   variantBadges: <TrophyOutlined />,
+  languages: <GlobalOutlined />,
+  fonts: <FontSizeOutlined />,
 };
 
 /**
@@ -81,6 +86,16 @@ const SPECIAL_ITEMS = [
     permission: 'activity',
     group: 'Audit',
     icon: <AuditOutlined />,
+  },
+  // `feedback` is super_admin-only on the backend because every row carries the
+  // submitter's name, phone and email — so for most admins this item simply
+  // isn't there.
+  {
+    key: '/feedback',
+    label: 'Feedback',
+    permission: 'feedback',
+    group: 'People',
+    icon: <SmileOutlined />,
   },
 ];
 

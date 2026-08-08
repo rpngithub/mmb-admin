@@ -24,6 +24,9 @@ import FaqsPage from './pages/FaqsPage';
 import TestimonialsPage from './pages/TestimonialsPage';
 import SpecialEventsPage from './pages/SpecialEventsPage';
 import CouponsPage from './pages/CouponsPage';
+import LanguagesPage from './pages/LanguagesPage';
+import FontsPage from './pages/FontsPage';
+import FeedbackPage from './pages/FeedbackPage';
 import GenericResourcePage from './pages/GenericResourcePage';
 import NotFound from './pages/NotFound';
 import { RESOURCES } from './resources';
@@ -85,6 +88,15 @@ export default function AppRouter() {
             </RequirePermission>
           }
         />
+        {/* Super-admin only in practice — feedback rows carry user contact details. */}
+        <Route
+          path="feedback"
+          element={
+            <RequirePermission domain="feedback">
+              <FeedbackPage />
+            </RequirePermission>
+          }
+        />
 
         {RESOURCES.filter((r) => !r.hidden).map((r) => (
           <Route
@@ -120,6 +132,10 @@ export default function AppRouter() {
                   <SpecialEventsPage />
                 ) : r.key === 'coupons' ? (
                   <CouponsPage />
+                ) : r.key === 'languages' ? (
+                  <LanguagesPage />
+                ) : r.key === 'fonts' ? (
+                  <FontsPage />
                 ) : (
                   <GenericResourcePage key={r.key} resource={r} />
                 )}
