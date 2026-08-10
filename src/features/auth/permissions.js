@@ -88,13 +88,33 @@ export function canRead(permissions, domain) {
 }
 
 /**
- * Extract a friendly display name + email from the decoded token, tolerating
- * the different claim shapes a backend might use.
+ * Extract the signed-in admin's uid + friendly display name + email from the
+ * decoded token, tolerating the different claim shapes a backend might use.
  * @param {object|null} payload
  */
 export function getAdminIdentity(payload) {
-  if (!payload) return { name: 'Admin', email: '' };
+  if (!payload) return { uid: null, name: 'Admin', email: '' };
   const name = payload.name || payload.full_name || payload.username || payload.email || 'Admin';
   const email = payload.email || '';
-  return { name, email };
+  const uid =
+    payload.uid ?? payload.admin_uid ?? payload.sub ?? payload.admin?.uid ?? payload.id ?? null;
+  return { uid: uid == null ? null : String(uid), name, email };
+}
+
+/**
+ * Is this admin record the currently signed-in admin? Used to guard the
+ * self-destructive actions (deactivating yourself signs you out instantly and
+ * only another admin can undo it).
+ *
+ * Matches on uid when the token carries one, and always falls back to email —
+ * `sub` is not guaranteed to be the uid, but admins sign in by email and the
+ * list rows carry it, so the email comparison is the dependable half.
+ */
+export function isSameAdmin(identity, record) {
+  if (!identity || !record) return false;
+  if (identity.uid && record.uid && String(record.uid) === identity.uid) return true;
+  if (identity.email && record.email) {
+    return String(record.email).toLowerCase() === String(identity.email).toLowerCase();
+  }
+  return false;
 }

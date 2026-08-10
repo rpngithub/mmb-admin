@@ -9,9 +9,6 @@ import {
   Table,
   Tag,
   Card,
-  Row,
-  Col,
-  Statistic,
   Result,
   Collapse,
   Divider,
@@ -23,7 +20,6 @@ import {
   SafetyCertificateOutlined,
   ImportOutlined,
   FileTextOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAppSelector } from '../app/hooks';
@@ -31,6 +27,7 @@ import { selectAccessToken } from '../features/auth/authSlice';
 import { usePermissions } from '../features/auth/usePermissions';
 import { useImportUploadMutation } from '../features/api/adminApi';
 import { downloadTemplate } from '../lib/downloadTemplate';
+import ImportResultReport from '../components/ImportResultReport';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -106,25 +103,6 @@ const ENTITIES = [
     ],
   },
 ];
-
-const STATUS_META = {
-  created: { color: 'green', label: 'Created' },
-  updated: { color: 'blue', label: 'Updated' },
-  skipped: { color: 'red', label: 'Skipped' },
-};
-
-// AntD's warning gold. Warnings are advisory — never the red used for skipped.
-const WARNING_COLOR = '#faad14';
-
-/**
- * Ordering rank for the report table: skipped rows first (something didn't
- * import), then rows that imported but carry warnings, then everything else.
- */
-function problemRank(row) {
-  if (row.status === 'skipped') return 0;
-  if ((row.warnings?.length ?? 0) > 0) return 1;
-  return 2;
-}
 
 export default function BulkImportPage() {
   const perms = usePermissions();
@@ -207,67 +185,7 @@ export default function BulkImportPage() {
     }
   };
 
-  const reportRows = useMemo(() => {
-    const rows = result?.rows || [];
-    return [...rows].sort((a, b) => {
-      const ra = problemRank(a);
-      const rb = problemRank(b);
-      if (ra !== rb) return ra - rb;
-      return (a.line ?? 0) - (b.line ?? 0);
-    });
-  }, [result]);
-
-  const reportColumns = [
-    { title: 'Line', dataIndex: 'line', key: 'line', width: 80 },
-    {
-      title: 'Name',
-      dataIndex: 'name',
-      key: 'name',
-      render: (v) => v || <Text type="secondary">—</Text>,
-    },
-    {
-      title: 'Status',
-      dataIndex: 'status',
-      key: 'status',
-      width: 120,
-      filters: Object.entries(STATUS_META).map(([value, m]) => ({
-        text: m.label,
-        value,
-      })),
-      onFilter: (value, record) => record.status === value,
-      render: (status) => {
-        const m = STATUS_META[status] || { color: 'default', label: status };
-        return <Tag color={m.color}>{m.label}</Tag>;
-      },
-    },
-    {
-      // Advisory only — the row still imported. Amber, never red. The strings
-      // themselves are in the expandable row below.
-      title: 'Warnings',
-      key: 'warnings',
-      width: 130,
-      filters: [{ text: 'Has warnings', value: 'yes' }],
-      onFilter: (_value, record) => (record.warnings?.length ?? 0) > 0,
-      render: (_v, record) => {
-        const count = record.warnings?.length ?? 0;
-        if (count === 0) return <Text type="secondary">—</Text>;
-        return (
-          <Tag icon={<WarningOutlined />} color="warning">
-            {count === 1 ? '1 warning' : `${count} warnings`}
-          </Tag>
-        );
-      },
-    },
-    {
-      title: 'Message',
-      dataIndex: 'message',
-      key: 'message',
-      render: (v) => v || <Text type="secondary">—</Text>,
-    },
-  ];
-
   const summary = result?.summary;
-  const notes = result?.notes || [];
 
   // No readable entity at all → hard 403 (guards a direct URL visit too).
   if (available.length === 0) {
@@ -518,103 +436,7 @@ export default function BulkImportPage() {
               </Space>
             }
           >
-            <Alert
-              style={{ marginBottom: 16 }}
-              showIcon
-              type={result.dry_run ? 'info' : 'success'}
-              message={
-                result.dry_run
-                  ? 'Validation only — nothing was written'
-                  : 'Import committed — these changes were written'
-              }
-              description={
-                result.dry_run
-                  ? 'This is what would happen. Use Import to apply it.'
-                  : undefined
-              }
-            />
-
-            {/* Run-level messages from the server (e.g. the S3 bucket was
-                unreachable). Already user-facing prose — rendered as-is. */}
-            {notes.length > 0 && (
-              <Alert
-                style={{ marginBottom: 16 }}
-                type="warning"
-                showIcon
-                message="Notes"
-                description={
-                  notes.length === 1 ? (
-                    notes[0]
-                  ) : (
-                    <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                      {notes.map((n, i) => (
-                        <li key={i}>{n}</li>
-                      ))}
-                    </ul>
-                  )
-                }
-              />
-            )}
-
-            <Row gutter={16} style={{ marginBottom: 16 }}>
-              <Col xs={12} sm={8} md={4}>
-                <Statistic title="Total" value={summary.total ?? 0} />
-              </Col>
-              <Col xs={12} sm={8} md={4}>
-                <Statistic
-                  title="Created"
-                  value={summary.created ?? 0}
-                  valueStyle={{ color: '#52c41a' }}
-                />
-              </Col>
-              <Col xs={12} sm={8} md={4}>
-                <Statistic
-                  title="Updated"
-                  value={summary.updated ?? 0}
-                  valueStyle={{ color: '#1677ff' }}
-                />
-              </Col>
-              <Col xs={12} sm={8} md={4}>
-                <Statistic
-                  title="Skipped"
-                  value={summary.skipped ?? 0}
-                  valueStyle={{ color: (summary.skipped ?? 0) > 0 ? '#cf1322' : undefined }}
-                />
-              </Col>
-              <Col xs={12} sm={8} md={4}>
-                {/* Rows carrying at least one warning — not a failure count. */}
-                <Statistic
-                  title="Warnings"
-                  value={summary.warnings ?? 0}
-                  valueStyle={{
-                    color: (summary.warnings ?? 0) > 0 ? WARNING_COLOR : undefined,
-                  }}
-                />
-              </Col>
-            </Row>
-
-            <Table
-              rowKey={(r) => `${r.line}-${r.name ?? ''}`}
-              size="small"
-              columns={reportColumns}
-              dataSource={reportRows}
-              pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `${t} rows` }}
-              scroll={{ x: 'max-content' }}
-              expandable={{
-                rowExpandable: (r) => (r.warnings?.length ?? 0) > 0,
-                expandedRowRender: (r) => (
-                  <ul style={{ margin: 0, paddingInlineStart: 20 }}>
-                    {r.warnings.map((w, i) => (
-                      // Warning strings are already human-readable and prefixed
-                      // with the column name — render them verbatim.
-                      <li key={`${r.line}-${i}`} style={{ color: WARNING_COLOR }}>
-                        {w}
-                      </li>
-                    ))}
-                  </ul>
-                ),
-              }}
-            />
+            <ImportResultReport result={result} />
           </Card>
         )}
       </Space>

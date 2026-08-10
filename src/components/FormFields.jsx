@@ -56,7 +56,7 @@ export default function FormFields({ fields }) {
                 valuePropName="checked"
                 initialValue={f.initialValue ?? false}
               >
-                <Switch />
+                <Switch disabled={f.disabled} />
               </Form.Item>
             );
           case 'number':

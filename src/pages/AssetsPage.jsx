@@ -17,11 +17,14 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
+  ImportOutlined,
+  CopyOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import ImageThumb from '../components/ImageThumb';
 import AssetFileUpload from '../components/AssetFileUpload';
+import ImportDrawer from '../components/ImportDrawer';
 import TagSelect from '../components/TagSelect';
 
 const { Title, Text } = Typography;
@@ -50,6 +53,7 @@ export default function AssetsPage() {
   const [filters, setFilters] = useState({ category_id: null, asset_type: null, status: null });
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState({ open: false, asset: null });
+  const [importOpen, setImportOpen] = useState(false);
 
   const queryParams = useMemo(
     () => ({
@@ -96,6 +100,19 @@ export default function AssetsPage() {
     });
   };
 
+  /**
+   * Build an import sheet from what's already here without retyping keys —
+   * `s3_key` is the column the assets importer matches on.
+   */
+  const copyKey = async (key) => {
+    try {
+      await navigator.clipboard.writeText(key);
+      message.success('S3 key copied');
+    } catch {
+      message.error('Could not copy — select the key in the editor instead.');
+    }
+  };
+
   const columns = [
     {
       title: 'Preview',
@@ -140,10 +157,18 @@ export default function AssetsPage() {
     {
       title: 'Actions',
       key: 'actions',
-      width: 110,
+      width: 150,
       fixed: 'right',
       render: (_v, asset) => (
         <Space size="small">
+          {asset.s3_key && (
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => copyKey(asset.s3_key)}
+              title="Copy S3 key"
+            />
+          )}
           {canUpdate && (
             <Button
               size="small"
@@ -222,6 +247,12 @@ export default function AssetsPage() {
           >
             Reload
           </Button>
+          {/* Registering files already uploaded to S3 is a create — same gate. */}
+          {canCreate && (
+            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
+              Import CSV
+            </Button>
+          )}
           {canCreate && (
             <Button
               type="primary"
@@ -250,6 +281,16 @@ export default function AssetsPage() {
         categories={categories}
         onClose={() => setEditor({ open: false, asset: null })}
         onSaved={assetsQuery.refetch}
+      />
+
+      {/* A committed import already invalidates the assets list tag; the
+          refetch covers this screen's server-filtered query explicitly. A dry
+          run writes nothing, so the drawer never fires this for one. */}
+      <ImportDrawer
+        open={importOpen}
+        entity="assets"
+        onClose={() => setImportOpen(false)}
+        onImported={assetsQuery.refetch}
       />
     </div>
   );

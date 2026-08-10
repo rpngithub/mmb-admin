@@ -19,11 +19,13 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
+  ImportOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import ImageUploadField from './ImageUploadField';
 import ImageThumb from './ImageThumb';
+import ImportDrawer from './ImportDrawer';
 import TagSelect from './TagSelect';
 import RelatedIndustriesField from './RelatedIndustriesField';
 
@@ -88,6 +90,9 @@ function toParentTree(rows, excludeId) {
  * a parent picker, and a reparent-aware delete flow. Business categories add a
  * tag multi-select (persisted via the dedicated PUT …/tags route) and the
  * ordered "Related industries" block (PUT …/related).
+ *
+ * `importEntity` (the import API's URL segment, e.g. 'asset-categories') adds
+ * the CSV import drawer to the toolbar, behind the same create permission.
  */
 export default function CategoriesManager({
   resourceKey,
@@ -101,6 +106,7 @@ export default function CategoriesManager({
   hasTags = false,
   hasRelated = false,
   hasStatus = false,
+  importEntity,
   deleteNote,
 }) {
   const perms = usePermissions();
@@ -117,6 +123,7 @@ export default function CategoriesManager({
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState({ open: false, record: null });
   const [reparent, setReparent] = useState(null); // { record, children }
+  const [importOpen, setImportOpen] = useState(false);
 
   const { data, isLoading, isFetching, refetch } =
     adminApi.endpoints[`${resourceKey}List`].useQuery();
@@ -305,6 +312,11 @@ export default function CategoriesManager({
           <Button icon={<ReloadOutlined />} onClick={refetch} loading={isFetching}>
             Reload
           </Button>
+          {importEntity && canCreate && (
+            <Button icon={<ImportOutlined />} onClick={() => setImportOpen(true)}>
+              Import CSV
+            </Button>
+          )}
           {canCreate && (
             <Button
               type="primary"
@@ -345,6 +357,17 @@ export default function CategoriesManager({
         onClose={() => setEditor({ open: false, record: null })}
         onSaved={refetch}
       />
+
+      {/* A committed import invalidates this resource's list tag; the refetch
+          is the belt-and-braces for the query this screen is holding. */}
+      {importEntity && (
+        <ImportDrawer
+          open={importOpen}
+          entity={importEntity}
+          onClose={() => setImportOpen(false)}
+          onImported={refetch}
+        />
+      )}
 
       <ReparentDeleteModal
         state={reparent}
