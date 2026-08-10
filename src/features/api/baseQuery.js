@@ -86,9 +86,20 @@ export const baseQueryWithReauth = async (args, api, extraOptions = {}) => {
       );
       result = await rawBaseQuery(args, api, extraOptions); // retry original
     } else {
-      api.dispatch(logout());
-      const normalized = normalizeError(result.error);
-      return { error: normalized };
+      // Refresh failed (revoked/blacklisted session, or an expired refresh token):
+      // end the session locally — the route guard bounces to /login on the next
+      // render. Guarded on `isAuthenticated` so a burst of concurrent 401s logs
+      // out and announces exactly once. `logout()` is dispatched synchronously,
+      // so later awaiters of the same refresh already see `false` here.
+      if (api.getState().auth.isAuthenticated) {
+        api.dispatch(logout());
+        notify.info({
+          message: 'Your session has ended',
+          description: 'Please sign in again to continue.',
+        });
+      }
+      // Returned without `announce()` — the raw 401 is never toasted.
+      return { error: normalizeError(result.error) };
     }
   }
 

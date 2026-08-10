@@ -38,6 +38,14 @@ const IMPORT_INVALIDATE_TAGS = {
     { type: 'variants', id: 'LIST' },
     { type: 'brandSeries', id: 'LIST' },
   ],
+  'asset-categories': [{ type: 'assetCategories', id: 'LIST' }],
+  // The assets sheet's `tags` column creates tags it doesn't know yet, so the
+  // tag list can move under an assets import too. Asset categories can't: an
+  // unknown `category` skips the row rather than creating anything.
+  assets: [
+    { type: 'assets', id: 'LIST' },
+    { type: 'tags', id: 'LIST' },
+  ],
 };
 
 /**

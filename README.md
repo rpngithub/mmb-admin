@@ -38,7 +38,14 @@ See [`.env.example`](.env.example).
 - **`baseQueryWithReauth`** wraps `fetchBaseQuery`:
   - On a **401**, it calls `POST /auth/refresh` **once** (guarded by a single-flight promise so
     concurrent 401s don't stampede), replaces **both** rotated tokens, and retries the original
-    request. If refresh fails, it dispatches `logout()` and the route guard bounces you to `/login`.
+    request. If refresh fails, it dispatches `logout()` **once** (guarded on `isAuthenticated`, so a
+    burst of concurrent 401s logs out and announces a single "Your session has ended" notice — never
+    the raw 401) and the route guard bounces you to `/login`.
+- Sessions can now end mid-work, not just on expiry: the API revokes **every** session an admin
+  holds the moment they are deactivated (via either `PATCH /admin/admins/:uid/status` or
+  `PATCH /admin/admins/:uid`), and revokes an admin's **other** sessions when their password is
+  changed — so a super admin resetting someone else's password signs that admin out everywhere,
+  while changing your own password leaves the tab you're in signed in.
   - On **success** it unwraps the `{ success, data, meta }` envelope so endpoints receive `data`
     directly, and hoists `meta.total` onto the query meta for server-paginated lists.
   - On **error** it normalizes the `{ error: { code, message, details } }` envelope and raises a
@@ -85,7 +92,7 @@ use their paginated endpoints with server-side pagination/search/filters (driven
 | Section       | Notes                                                                  |
 | ------------- | ---------------------------------------------------------------------- |
 | Users         | List + detail drawer + activate/deactivate toggle (no create/delete).  |
-| Admins        | List + create + edit (role select, optional password on edit).         |
+| Admins        | List + create + edit (role select, optional password on edit). Session-ending edits are confirmed first: deactivating another admin signs them out immediately, and setting a password signs them out of every device. Deactivating **yourself** is blocked (your own row is tagged "You" and its Active switch is disabled in the editor) — there is no self-service reactivation. |
 | Activity Logs | Read-only audit viewer, filterable by entity/action/actor type.        |
 | Templates     | Paginated/filtered list; full CRUD via the generic template routes (edit fetches the full record incl. `content`). |
 | App Settings  | Grouped by `group`; type-aware value editor (string/integer/boolean/json) that always sends `value` as a string; inline Public/Internal (`is_public` 0\|1) toggle; immutable `key` on edit; delete guards for app-critical keys. |

@@ -23,15 +23,40 @@ import {
   adminApi,
 } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
+import { useAppSelector } from '../app/hooks';
+import { selectIdentity } from '../features/auth/authSlice';
+import { isSameAdmin } from '../features/auth/permissions';
 import FormFields from '../components/FormFields';
 import { humanize } from '../components/formUtils';
 
 const { Title } = Typography;
 
+/** Promise-wrapped Modal.confirm so handlers can `await` the answer. */
+function confirmAsync(modal, config) {
+  return new Promise((resolve) => {
+    modal.confirm({
+      ...config,
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    });
+  });
+}
+
+/** Success toast that names the session side effect the save just triggered. */
+function successCopy({ self, deactivating, resettingPassword, name }) {
+  if (self && resettingPassword) {
+    return 'Password updated. You’re still signed in here; your other devices have been signed out.';
+  }
+  if (deactivating) return `${name} updated and signed out of the admin panel.`;
+  if (resettingPassword) return `${name} updated. They’ve been signed out of every device.`;
+  return 'Admin updated';
+}
+
 export default function AdminsPage() {
   const perms = usePermissions();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [form] = Form.useForm();
+  const identity = useAppSelector(selectIdentity);
 
   const canCreate = perms.can('admins', 'create');
   const canUpdate = perms.can('admins', 'update');
@@ -75,15 +100,29 @@ export default function AdminsPage() {
           help: 'Integer role id from GET /admin/roles.',
         };
     if (editing) {
+      // Both destructive server behaviours are spelled out up front: deactivating
+      // revokes every session immediately, and setting a password revokes the
+      // target's *other* sessions (all of them, unless you are the target).
+      const self = isSameAdmin(identity, editing);
       return [
         { name: 'name', label: 'Name', type: 'text', required: true },
         roleField,
-        { name: 'is_active', label: 'Active', type: 'switch' },
+        {
+          name: 'is_active',
+          label: 'Active',
+          type: 'switch',
+          disabled: self,
+          help: self
+            ? 'You can’t deactivate your own account — ask another admin.'
+            : 'Deactivating signs this admin out of the panel immediately.',
+        },
         {
           name: 'password',
           label: 'Password',
           type: 'password',
-          help: 'Leave blank to keep the current password. 8–100 characters.',
+          help: self
+            ? 'Leave blank to keep the current password. Changing it signs out your other devices — you stay signed in here. 8–100 characters.'
+            : 'Leave blank to keep the current password. Changing it signs this admin out of every device. 8–100 characters.',
           rules: [{ min: 8, max: 100, message: '8–100 characters' }],
         },
       ];
@@ -106,7 +145,7 @@ export default function AdminsPage() {
       },
       roleField,
     ];
-  }, [editing, canReadRoles, roleOptions]);
+  }, [editing, canReadRoles, roleOptions, identity]);
 
   const openCreate = () => {
     setEditing(null);
@@ -132,27 +171,57 @@ export default function AdminsPage() {
     } catch {
       return;
     }
-    setSubmitting(true);
-    try {
-      if (editing) {
+    if (editing) {
+      const self = isSameAdmin(identity, editing);
+      const wasActive = editing.is_active === true || editing.is_active === 1;
+      const deactivating = wasActive && !values.is_active;
+      const resettingPassword = Boolean(values.password);
+
+      // Confirm the session-ending edits before they land. Editing your own
+      // password is deliberately not gated — the API keeps this tab signed in.
+      if (!self && (deactivating || resettingPassword)) {
+        const lines = [];
+        if (deactivating)
+          lines.push(`This signs ${editing.name} out of the admin panel immediately.`);
+        if (resettingPassword)
+          lines.push(`Changing the password also signs ${editing.name} out of every device.`);
+        const ok = await confirmAsync(modal, {
+          title: deactivating ? `Deactivate ${editing.name}?` : `Reset ${editing.name}’s password?`,
+          content: lines.join(' '),
+          okText: deactivating ? 'Deactivate' : 'Save',
+          okButtonProps: { danger: deactivating },
+        });
+        if (!ok) return;
+      }
+
+      setSubmitting(true);
+      try {
         // PATCH accepts name, role_id, is_active, password (all optional).
-        const body = {
-          name: values.name,
-          role_id: values.role_id,
-          is_active: values.is_active ? 1 : 0,
-        };
+        // `is_active` is omitted when editing yourself — the field is disabled,
+        // so sending it could only ever mean an accidental self-lockout.
+        const body = { name: values.name, role_id: values.role_id };
+        if (!self) body.is_active = values.is_active ? 1 : 0;
         if (values.password) body.password = values.password;
         await updateAdmin({ uid: editing.uid, body }).unwrap();
-        message.success('Admin updated');
-      } else {
-        await createAdmin({
-          name: values.name,
-          email: values.email,
-          password: values.password,
-          role_id: values.role_id,
-        }).unwrap();
-        message.success('Admin created');
+        message.success(successCopy({ self, deactivating, resettingPassword, name: editing.name }));
+        setEditorOpen(false);
+      } catch {
+        /* notification handled globally */
+      } finally {
+        setSubmitting(false);
       }
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await createAdmin({
+        name: values.name,
+        email: values.email,
+        password: values.password,
+        role_id: values.role_id,
+      }).unwrap();
+      message.success('Admin created');
       setEditorOpen(false);
     } catch {
       /* notification handled globally */
@@ -162,16 +231,49 @@ export default function AdminsPage() {
   };
 
   const toggleActive = async (record, checked) => {
+    if (!checked) {
+      // Deactivating revokes every session the admin holds and blacklists their
+      // current access token — their next request is a 401, with no self-service
+      // way back in. Blocked outright for your own account.
+      if (isSameAdmin(identity, record)) {
+        modal.warning({
+          title: 'You can’t deactivate your own account',
+          content:
+            'This would sign you out of the admin panel the moment you confirmed it, and only another admin could undo it. Ask another admin to deactivate you.',
+          okText: 'Got it',
+        });
+        return;
+      }
+      const ok = await confirmAsync(modal, {
+        title: `Deactivate ${record.name}?`,
+        content: `This signs ${record.name} out of the admin panel immediately, on every device. They stay locked out until an admin reactivates them.`,
+        okText: 'Deactivate',
+        okButtonProps: { danger: true },
+      });
+      if (!ok) return;
+    }
     try {
       await updateStatus({ uid: record.uid, is_active: checked ? 1 : 0 }).unwrap();
-      message.success(`Admin ${checked ? 'activated' : 'deactivated'}`);
+      message.success(
+        checked ? `${record.name} activated` : `${record.name} deactivated and signed out`,
+      );
     } catch {
       /* notification handled globally */
     }
   };
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
+    {
+      title: 'Name',
+      dataIndex: 'name',
+      key: 'name',
+      render: (value, record) => (
+        <Space size={6}>
+          {value}
+          {isSameAdmin(identity, record) && <Tag color="blue">You</Tag>}
+        </Space>
+      ),
+    },
     { title: 'Email', dataIndex: 'email', key: 'email' },
     {
       title: 'Role',
