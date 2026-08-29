@@ -2,6 +2,7 @@
 export const PERMISSION_DOMAINS = [
   'roles',
   'templates',
+  'frames',
   'categories',
   'variants',
   'brand_series',
@@ -18,6 +19,8 @@ export const PERMISSION_DOMAINS = [
   'plans',
   'features',
   'coupons',
+  // Top-up packs + the quota grants support issues against them.
+  'quota_packs',
   'settings',
   'users',
   'admins',

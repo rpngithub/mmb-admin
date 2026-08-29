@@ -263,6 +263,26 @@ export const RESOURCES = [
     group: 'Catalog',
   }),
 
+  // Frame categories — the filter chips users tap in the Frames Store. Flat (no
+  // parent_id, so no tree UI) and short enough to come back unpaginated.
+  // `hidden: true` drops the auto nav entry and `/r/...` route: the screen lives
+  // at /frame-categories (src/pages/FrameCategoriesPage.jsx, wired in router.jsx)
+  // next to /frames, because order is set by drag-reorder (PATCH …/reorder) and
+  // the slug is frozen after creation. This config exists for the generated
+  // frameCategories* CRUD endpoints + cache tag; its fields/columns are unused.
+  //
+  // Frames themselves are NOT a generic resource — their list is the dedicated
+  // paginated endpoint (see framesList in adminApi), like Templates.
+  resource({
+    key: 'frameCategories',
+    name: 'Frame Categories',
+    title: 'Frame Category',
+    path: '/admin/frame-categories',
+    permission: 'frames',
+    group: 'Catalog',
+    hidden: true,
+  }),
+
   // Template Sizes have a dedicated page (src/pages/TemplateSizesPage.jsx, wired
   // in router.jsx) that sends the exact strict types. This config only supplies
   // nav/permission/endpoints.
@@ -424,6 +444,9 @@ export const RESOURCES = [
       { dataIndex: 'label', title: 'Label' },
       { dataIndex: 'data_type', title: 'Data type' },
       { dataIndex: 'reset_period', title: 'Reset period' },
+      // Turning this on is what makes a feature appear in the Top-up Packs and
+      // quota-grant dropdowns — no deploy needed.
+      { dataIndex: 'is_topupable', title: 'Top-uppable', type: 'boolean', width: 120 },
     ],
     fields: [
       { name: 'key', label: 'Key', type: 'text', required: true, help: 'Unique, e.g. exports_per_month' },
@@ -442,6 +465,16 @@ export const RESOURCES = [
         type: 'select',
         initialValue: 'integer',
         options: ['integer', 'boolean'].map((v) => ({ label: v, value: v })),
+      },
+      // Gates the feature dropdown on Top-up Packs and on a support quota grant:
+      // the server refuses a pack for a feature that isn't flagged, so an
+      // unflagged one can never be published.
+      {
+        name: 'is_topupable',
+        label: 'Can be topped up',
+        type: 'switch',
+        initialValue: false,
+        help: 'Allows top-up packs to be sold for this feature. The feature still has to be metered in the app for the purchased quota to be spendable.',
       },
     ],
   }),
