@@ -17,10 +17,13 @@ const SPECIAL_TAGS = [
   'Admins',
   'ActivityLogs',
   'Templates',
+  'Frames',
   'BillingOptions',
   'PlanFeatures',
   'CouponPlans',
   'Feedback',
+  'QuotaPack',
+  'QuotaGrant',
 ];
 
 /**
@@ -369,6 +372,210 @@ export const adminApi = createApi({
       query: (uid) => ({ url: `/admin/templates/${uid}/bundle/reset`, method: 'POST' }),
       extraOptions: { silent: true },
       invalidatesTags: (_r, _e, uid) => [{ type: 'Templates', id: uid }],
+    }),
+
+    // ---- Frames (paged list + full CRUD) ----------------------------------
+    // The branded border a user puts over a design, sold PER FRAME: `is_premium`
+    // + `price` are the whole access model — there is no frames↔plans link in the
+    // API and a subscription never unlocks one.
+    //
+    // The list omits `content` (and adds has_content / has_thumbnail 1|0,
+    // is_publishable boolean, missing_for_publish[{field,message}]), so the editor
+    // ALWAYS reads frameGet — binding a form to a list row would PATCH an empty
+    // design payload over a real one.
+    framesList: builder.query({
+      query: (params = {}) => ({ url: '/admin/frames', params: cleanParams(params) }),
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: [{ type: 'Frames', id: 'LIST' }],
+    }),
+    frameGet: builder.query({
+      query: (uid) => ({ url: `/admin/frames/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'Frames', id: uid }],
+    }),
+    // Silent create/update so the editor can map 400 VALIDATION_ERROR
+    // (details[].field) and 409 CONFLICT (`name` is globally unique,
+    // case-insensitive) onto the offending form item instead of the generic
+    // global notification. The PATCH is also the publish/unpublish call —
+    // { status:'active' } runs the server-side gate and returns one details[]
+    // entry per unmet requirement.
+    frameCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/frames', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'Frames', id: 'LIST' }],
+    }),
+    frameUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/frames/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'Frames', id: uid },
+        { type: 'Frames', id: 'LIST' },
+      ],
+    }),
+    // Hard delete, and silent on purpose: the database REFUSES to delete a frame
+    // any user owns (409 CONFLICT) so nobody loses something they paid for. The
+    // page turns that into the "retire it instead" route rather than a red toast.
+    frameRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/frames/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'Frames', id: uid },
+        { type: 'Frames', id: 'LIST' },
+      ],
+    }),
+    // Bulk reorder — array position becomes display_order FOR THE SUBMITTED UIDS
+    // ONLY, in one all-or-nothing transaction. Sending a partial list (one page,
+    // a filtered view) hands those rows positions 0..n that collide with rows it
+    // didn't include, so the page only enables dragging on the complete,
+    // unfiltered, unpaginated list. Takes uids, not numeric ids; one unknown id
+    // 404s the whole batch and changes nothing. Silent: the page patches the
+    // cache optimistically and rolls back + toasts error.message on failure.
+    framesReorder: builder.mutation({
+      query: (ids) => ({ url: '/admin/frames/reorder', method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'Frames', id: 'LIST' }],
+    }),
+
+    // ---- Frame categories --------------------------------------------------
+    // The filter chips users tap in the store: flat (no parent_id), short enough
+    // to come back unpaginated, and ordered by drag. Same `frames.*` permission
+    // domain as the frames themselves. List/get/delete run on the generated
+    // frameCategories* endpoints; create/update are dedicated + silent so the
+    // editor maps details[].field and a duplicate-name 409 onto the form.
+    frameCategoryCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/frame-categories', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'frameCategories', id: 'LIST' }],
+    }),
+    frameCategoryUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/frame-categories/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'frameCategories', id: uid },
+        { type: 'frameCategories', id: 'LIST' },
+        // A renamed/retired category shows up in the frames list's Category column.
+        { type: 'Frames', id: 'LIST' },
+      ],
+    }),
+    frameCategoriesReorder: builder.mutation({
+      query: (ids) => ({
+        url: '/admin/frame-categories/reorder',
+        method: 'PATCH',
+        body: { ids },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'frameCategories', id: 'LIST' }],
+    }),
+
+    // ---- Top-up packs (paged list + full CRUD) -----------------------------
+    // A pack is extra headroom on a feature, bought outright on top of whatever
+    // the user's plan allows. Packs are NOT tied to plans — there is no
+    // packs↔plans relationship in the API — and a purchase NEVER expires: it
+    // survives the monthly reset and a lapsed subscription. That is why pulling
+    // or deleting a pack is never a clawback.
+    //
+    // Permission domain is `quota_packs`, deliberately NOT a content domain:
+    // pricing is commerce, so a content_admin legitimately gets 403 here.
+    //
+    // Every LIST row carries `is_publishable` + `missing_for_publish`
+    // [{field,message}] computed by the same server function as the publish
+    // gate, so the UI never re-derives the rules. GET /:uid does NOT carry them.
+    quotaPacksList: builder.query({
+      query: (params = {}) => ({ url: '/admin/quota-packs', params: cleanParams(params) }),
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: (result) => [
+        { type: 'QuotaPack', id: 'LIST' },
+        ...(result?.items || []).map((p) => ({ type: 'QuotaPack', id: p.uid })),
+      ],
+    }),
+    quotaPackGet: builder.query({
+      query: (uid) => ({ url: `/admin/quota-packs/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'QuotaPack', id: uid }],
+    }),
+    // Silent create/update so the editor maps 400 VALIDATION_ERROR
+    // (details[].field) and 409 CONFLICT (`name` is unique case-insensitively)
+    // onto the offending form item instead of the global notification.
+    //
+    // POST returns the bare row WITHOUT the nested FeatureType, while PATCH and
+    // GET /:uid include it — hence a plain LIST invalidation after a create
+    // rather than merging the response into the cache.
+    quotaPackCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/quota-packs', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'QuotaPack', id: 'LIST' }],
+    }),
+    // Also the publish/unpublish call: { status:'active' } runs the server-side
+    // gate, which judges the state the row would have AFTER the write — so the
+    // missing fields and the status can go up in one PATCH.
+    quotaPackUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/quota-packs/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'QuotaPack', id: uid },
+        { type: 'QuotaPack', id: 'LIST' },
+      ],
+    }),
+    // Hard delete. A pack that has been sold CAN be deleted: the grants survive
+    // (their quantity was snapshotted at purchase) and just lose the link back,
+    // which loses the per-pack revenue reporting — so the page defaults the
+    // retire action to status:'inactive' and keeps this as the confirmed
+    // secondary action.
+    quotaPackRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/quota-packs/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'QuotaPack', id: uid },
+        { type: 'QuotaPack', id: 'LIST' },
+      ],
+    }),
+    // Bulk reorder — array position becomes display_order, in one all-or-nothing
+    // transaction. Takes uids, not numeric ids. A 404 means one uid no longer
+    // exists and NOTHING was written, so the page refetches rather than retrying
+    // the same array. Silent: the page patches the cache optimistically and
+    // rolls back + toasts on failure.
+    quotaPacksReorder: builder.mutation({
+      query: (ids) => ({ url: '/admin/quota-packs/reorder', method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'QuotaPack', id: 'LIST' }],
+    }),
+
+    // ---- Quota grants (support tab on the user detail screen) --------------
+    // A grant is one block of quota a user holds — bought through the store, or
+    // issued by support. The user's balance for a feature IS the sum over their
+    // active grants, so this list is the balance rather than a report of it.
+    // Reading and granting need `quota_packs.update`; revoking needs
+    // `quota_packs.delete`.
+    userQuotaGrants: builder.query({
+      query: (userUid) => ({ url: `/admin/users/${userUid}/quota-grants` }),
+      providesTags: (_r, _e, userUid) => [{ type: 'QuotaGrant', id: userUid }],
+    }),
+    // `feature` is the feature-type KEY (a string), not the numeric id — the one
+    // endpoint in this pair keyed that way, because a human types it. The grant
+    // is active immediately: there is no payment to wait for. Silent so the form
+    // can pin a 400/404 onto the field that caused it.
+    quotaGrantCreate: builder.mutation({
+      query: ({ userUid, body }) => ({
+        url: `/admin/users/${userUid}/quota-grants`,
+        method: 'POST',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { userUid }) => [{ type: 'QuotaGrant', id: userUid }],
+    }),
+    // Revoke — sets the grant to `revoked` and KEEPS the row as the audit
+    // record. `uid` here is the GRANT's uid; `userUid` is carried only to
+    // invalidate the right user's list. Idempotent (a second revoke still 200s),
+    // and 409 for a `pending` grant — which the panel prevents by disabling the
+    // action on non-active rows.
+    quotaGrantRevoke: builder.mutation({
+      query: ({ uid }) => ({ url: `/admin/quota-grants/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { userUid }) => [{ type: 'QuotaGrant', id: userUid }],
     }),
 
     // ---- Public config feed (cdn_base_url etc.) ---------------------------
@@ -1002,6 +1209,26 @@ export const {
   useTemplateCreateMutation,
   useTemplateUpdateMutation,
   useTemplateRemoveMutation,
+  // Frames (per-frame purchase — never plan-unlocked) + their categories
+  useFramesListQuery,
+  useFrameGetQuery,
+  useFrameCreateMutation,
+  useFrameUpdateMutation,
+  useFrameRemoveMutation,
+  useFramesReorderMutation,
+  useFrameCategoryCreateMutation,
+  useFrameCategoryUpdateMutation,
+  useFrameCategoriesReorderMutation,
+  // Top-up packs (bought outright, never expire) + the per-user quota grants
+  useQuotaPacksListQuery,
+  useQuotaPackGetQuery,
+  useQuotaPackCreateMutation,
+  useQuotaPackUpdateMutation,
+  useQuotaPackRemoveMutation,
+  useQuotaPacksReorderMutation,
+  useUserQuotaGrantsQuery,
+  useQuotaGrantCreateMutation,
+  useQuotaGrantRevokeMutation,
   usePublicConfigQuery,
   useUploadPresignMutation,
   useUploadConfirmMutation,

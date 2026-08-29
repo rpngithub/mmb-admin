@@ -18,6 +18,8 @@ import {
   GlobalOutlined,
   FontSizeOutlined,
   SmileOutlined,
+  BorderOuterOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -64,6 +66,31 @@ const SPECIAL_ITEMS = [
     permission: 'templates',
     group: 'Catalog',
     icon: <FileImageOutlined />,
+  },
+  // Frames (the branded borders users buy one at a time) and the store's
+  // category chips — one permission domain, two screens.
+  {
+    key: '/frames',
+    label: 'Frames',
+    permission: 'frames',
+    group: 'Catalog',
+    icon: <BorderOuterOutlined />,
+  },
+  {
+    key: '/frame-categories',
+    label: 'Frame Categories',
+    permission: 'frames',
+    group: 'Catalog',
+    icon: <AppstoreOutlined />,
+  },
+  // Top-up packs sit under Billing, not Catalog: they are priced commerce, and
+  // `quota_packs` is a permission a content admin does not hold.
+  {
+    key: '/quota-packs',
+    label: 'Top-up Packs',
+    permission: 'quota_packs',
+    group: 'Billing',
+    icon: <ThunderboltOutlined />,
   },
   {
     key: '/homepage-categories',

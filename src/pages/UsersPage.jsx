@@ -9,6 +9,7 @@ import {
   Tag,
   Drawer,
   Descriptions,
+  Tabs,
   App,
 } from 'antd';
 import { ReloadOutlined, EyeOutlined } from '@ant-design/icons';
@@ -20,6 +21,7 @@ import {
 } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import { humanize } from '../components/formUtils';
+import UserQuotaGrantsPanel from '../components/UserQuotaGrantsPanel';
 
 const { Title } = Typography;
 
@@ -145,23 +147,56 @@ export default function UsersPage() {
   );
 }
 
+/**
+ * User detail: the raw record, plus the support view of the user's top-up quota.
+ *
+ * The grants tab is gated on `quota_packs.update` — the permission the list
+ * endpoint itself requires — so an admin who would only get a 403 never sees a
+ * tab that can't load. It is deliberately NOT a content permission: pricing and
+ * the quota it buys are commerce, so a content_admin doesn't hold it.
+ */
 function UserDetailDrawer({ uid, onClose }) {
+  const perms = usePermissions();
   const { data, isFetching } = useUserGetQuery(uid, { skip: !uid });
+  const canSeeGrants = perms.can('quota_packs', 'update');
+
+  const details = (
+    <Descriptions column={1} bordered size="small">
+      {Object.entries(data || {}).map(([key, value]) => (
+        <Descriptions.Item key={key} label={humanize(key)}>
+          {value === null || value === undefined || value === ''
+            ? '—'
+            : typeof value === 'object'
+              ? JSON.stringify(value)
+              : String(value)}
+        </Descriptions.Item>
+      ))}
+    </Descriptions>
+  );
+
+  const items = [{ key: 'details', label: 'Details', children: data ? details : null }];
+  if (canSeeGrants) {
+    items.push({
+      key: 'grants',
+      label: 'Quota grants',
+      // Rendered on first activation, so opening the drawer doesn't fetch grants
+      // for every user an admin merely glances at.
+      children: uid ? (
+        <UserQuotaGrantsPanel userUid={uid} userLabel={data?.name || data?.email || uid} />
+      ) : null,
+    });
+  }
+
   return (
-    <Drawer title="User details" open={Boolean(uid)} onClose={onClose} width={520} loading={isFetching}>
-      {data && (
-        <Descriptions column={1} bordered size="small">
-          {Object.entries(data).map(([key, value]) => (
-            <Descriptions.Item key={key} label={humanize(key)}>
-              {value === null || value === undefined || value === ''
-                ? '—'
-                : typeof value === 'object'
-                  ? JSON.stringify(value)
-                  : String(value)}
-            </Descriptions.Item>
-          ))}
-        </Descriptions>
-      )}
+    <Drawer
+      title="User details"
+      open={Boolean(uid)}
+      onClose={onClose}
+      width={canSeeGrants ? 900 : 520}
+      destroyOnClose
+      loading={isFetching}
+    >
+      <Tabs items={items} />
     </Drawer>
   );
 }

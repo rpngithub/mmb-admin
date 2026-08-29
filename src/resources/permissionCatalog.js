@@ -22,6 +22,9 @@ export const PERMISSION_CATALOG = [
     hint: 'series, style personalities & colours',
     actions: ALL,
   },
+  // Frames and frame categories share one domain — there is no separate
+  // frame_categories key on the backend.
+  { domain: 'frames', label: 'Frames', hint: 'frames & frame categories', actions: ALL },
   { domain: 'sizes', label: 'Template Sizes', actions: ALL },
   { domain: 'tags', label: 'Tags', actions: ALL },
   { domain: 'assets', label: 'Assets', hint: 'assets & categories', actions: ALL },
@@ -39,5 +42,17 @@ export const PERMISSION_CATALOG = [
   { domain: 'plans', label: 'Plans', hint: 'plans & billing', actions: ALL },
   { domain: 'features', label: 'Feature Types', actions: ALL },
   { domain: 'coupons', label: 'Coupons', actions: ALL },
+  // Top-up packs AND the per-user quota grants issued by support share one
+  // domain. Deliberately NOT a content permission: pricing is commerce, so only
+  // super_admin holds it out of the box and a content_admin gets a 403 — don't
+  // add it to a content role without asking whoever owns pricing.
+  // `.update` also governs reading and issuing a user's grants; `.delete`
+  // governs revoking one.
+  {
+    domain: 'quota_packs',
+    label: 'Top-up Packs',
+    hint: 'packs & user quota grants — commerce, not content',
+    actions: ALL,
+  },
   { domain: 'settings', label: 'App Settings', actions: ALL },
 ];

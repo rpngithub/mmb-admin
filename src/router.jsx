@@ -7,6 +7,9 @@ import Dashboard from './pages/Dashboard';
 import UsersPage from './pages/UsersPage';
 import AdminsPage from './pages/AdminsPage';
 import TemplatesPage from './pages/TemplatesPage';
+import FramesPage from './pages/FramesPage';
+import FrameCategoriesPage from './pages/FrameCategoriesPage';
+import QuotaPacksPage from './pages/QuotaPacksPage';
 import HomepageCategoriesPage from './pages/HomepageCategoriesPage';
 import BulkImportPage from './pages/BulkImportPage';
 import ActivityLogsPage from './pages/ActivityLogsPage';
@@ -67,6 +70,33 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="templates">
               <TemplatesPage />
+            </RequirePermission>
+          }
+        />
+        {/* Frames and their categories share the `frames` permission domain. */}
+        <Route
+          path="frames"
+          element={
+            <RequirePermission domain="frames">
+              <FramesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="frame-categories"
+          element={
+            <RequirePermission domain="frames">
+              <FrameCategoriesPage />
+            </RequirePermission>
+          }
+        />
+        {/* Top-up packs are commerce, not content: `quota_packs` is held by
+            super_admin out of the box, so a content_admin gets a 403 here. */}
+        <Route
+          path="quota-packs"
+          element={
+            <RequirePermission domain="quota_packs">
+              <QuotaPacksPage />
             </RequirePermission>
           }
         />
