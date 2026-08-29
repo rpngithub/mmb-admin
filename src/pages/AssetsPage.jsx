@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   Table,
+  Tooltip,
   Typography,
   Space,
   Input,
@@ -19,15 +21,17 @@ import {
   DeleteOutlined,
   ImportOutlined,
   CopyOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import ImageThumb from '../components/ImageThumb';
 import AssetFileUpload from '../components/AssetFileUpload';
+import ImageUploadField from '../components/ImageUploadField';
 import ImportDrawer from '../components/ImportDrawer';
 import TagSelect from '../components/TagSelect';
 
-const { Title, Text } = Typography;
+const { Title, Text, Paragraph } = Typography;
 
 const ASSET_TYPES = ['icon', 'emoji', 'shape', 'font', 'audio', 'video', 'animated', 'bg'];
 const IMAGE_TYPES = new Set(['icon', 'emoji', 'shape', 'bg']);
@@ -35,6 +39,16 @@ const STATUSES = ['active', 'inactive'];
 
 const isTrue = (v) => v === true || v === 1 || v === '1';
 const typeOptions = ASSET_TYPES.map((t) => ({ label: t, value: t }));
+
+/**
+ * A premium asset is served to non-paying viewers WITHOUT its `s3_key` — only
+ * `thumbnail_s3_key` survives the lock. No preview therefore means an empty
+ * card in the app, for exactly the people being sold to.
+ */
+const needsPreview = (a) => isTrue(a.is_premium) && !a.thumbnail_s3_key;
+
+const NO_PREVIEW_HINT =
+  'Users who have not paid see an empty card for this asset. Upload a small, watermarked preview.';
 
 /**
  * Assets table driven by the server filters (category_id / asset_type / status),
@@ -52,6 +66,10 @@ export default function AssetsPage() {
 
   const [filters, setFilters] = useState({ category_id: null, asset_type: null, status: null });
   const [search, setSearch] = useState('');
+  // Client-side: there is no is_premium filter server-side, and the list is
+  // unpaginated, so the whole "no preview" work queue is derived from what we
+  // already hold.
+  const [onlyNoPreview, setOnlyNoPreview] = useState(false);
   const [editor, setEditor] = useState({ open: false, asset: null });
   const [importOpen, setImportOpen] = useState(false);
 
@@ -77,11 +95,15 @@ export default function AssetsPage() {
     return map;
   }, [categories]);
 
+  const noPreviewCount = useMemo(() => assets.filter(needsPreview).length, [assets]);
+
   const rows = useMemo(() => {
-    if (!search.trim()) return assets;
-    const q = search.toLowerCase();
-    return assets.filter((a) => a.name?.toLowerCase().includes(q));
-  }, [assets, search]);
+    let out = assets;
+    if (onlyNoPreview) out = out.filter(needsPreview);
+    const q = search.trim().toLowerCase();
+    if (q) out = out.filter((a) => a.name?.toLowerCase().includes(q));
+    return out;
+  }, [assets, search, onlyNoPreview]);
 
   const onDelete = (asset) => {
     modal.confirm({
@@ -115,15 +137,24 @@ export default function AssetsPage() {
 
   const columns = [
     {
+      // Same rule the app uses — `thumbnail_s3_key || s3_key`. The difference:
+      // an admin response is never locked, so a premium row falling back to its
+      // real file shows something no unpaid user will ever see. Dimmed + hinted
+      // rather than passed off as the truth.
       title: 'Preview',
       key: 'preview',
       width: 70,
-      render: (_v, a) =>
-        IMAGE_TYPES.has(a.asset_type) ? (
-          <ImageThumb k={a.s3_key} size={40} />
-        ) : (
-          <Text type="secondary">—</Text>
-        ),
+      render: (_v, a) => {
+        const key = a.thumbnail_s3_key || (IMAGE_TYPES.has(a.asset_type) ? a.s3_key : null);
+        if (!key) return <Text type="secondary">—</Text>;
+        const thumb = <ImageThumb k={key} size={40} />;
+        if (!needsPreview(a)) return thumb;
+        return (
+          <Tooltip title={`This is the real file, shown to admins only. ${NO_PREVIEW_HINT}`}>
+            <span style={{ opacity: 0.4, display: 'inline-flex' }}>{thumb}</span>
+          </Tooltip>
+        );
+      },
     },
     { title: 'Name', dataIndex: 'name', key: 'name', render: (v) => <Text strong>{v}</Text> },
     {
@@ -144,8 +175,22 @@ export default function AssetsPage() {
       title: 'Premium',
       dataIndex: 'is_premium',
       key: 'is_premium',
-      width: 90,
-      render: (v) => (isTrue(v) ? <Tag color="gold">Premium</Tag> : <Text type="secondary">—</Text>),
+      width: 170,
+      render: (v, a) =>
+        isTrue(v) ? (
+          <Space size={4} wrap>
+            <Tag color="gold">Premium</Tag>
+            {!a.thumbnail_s3_key && (
+              <Tooltip title={NO_PREVIEW_HINT}>
+                <Tag color="orange" icon={<WarningOutlined />} style={{ marginInlineEnd: 0 }}>
+                  No preview
+                </Tag>
+              </Tooltip>
+            )}
+          </Space>
+        ) : (
+          <Text type="secondary">—</Text>
+        ),
     },
     {
       title: 'Status',
@@ -240,6 +285,16 @@ export default function AssetsPage() {
             onChange={(e) => setSearch(e.target.value)}
             onSearch={setSearch}
           />
+          <Tooltip title="Premium assets with no preview image — the ones showing an empty card in the app.">
+            <Button
+              icon={<WarningOutlined />}
+              danger={onlyNoPreview}
+              type={onlyNoPreview ? 'primary' : 'default'}
+              onClick={() => setOnlyNoPreview((v) => !v)}
+            >
+              No preview ({noPreviewCount})
+            </Button>
+          </Tooltip>
           <Button
             icon={<ReloadOutlined />}
             onClick={assetsQuery.refetch}
@@ -264,6 +319,29 @@ export default function AssetsPage() {
           )}
         </Space>
       </div>
+
+      {/* The work queue. Premium assets are withheld from non-paying users —
+          without a preview there is literally nothing for the app to draw, so
+          this backlog is the feature, not a per-row curiosity. Counted over the
+          current server filters, so it can be cleared category by category. */}
+      {noPreviewCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            onlyNoPreview
+              ? `Showing ${noPreviewCount} premium ${noPreviewCount === 1 ? 'asset' : 'assets'} with no preview`
+              : `${noPreviewCount} premium ${noPreviewCount === 1 ? 'asset has' : 'assets have'} no preview`
+          }
+          description="They render as an empty card for everyone who has not paid. Upload a small, watermarked preview on each — or fill the thumbnail_s3_key column and re-import the sheet."
+          action={
+            <Button size="small" onClick={() => setOnlyNoPreview((v) => !v)}>
+              {onlyNoPreview ? 'Show all' : 'Show them'}
+            </Button>
+          }
+        />
+      )}
 
       <Table
         rowKey="uid"
@@ -297,7 +375,7 @@ export default function AssetsPage() {
 }
 
 function AssetEditor({ open, asset, categories, onClose, onSaved }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(asset);
@@ -312,6 +390,8 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
   });
 
   const assetType = Form.useWatch('asset_type', form);
+  const isPremium = Boolean(Form.useWatch('is_premium', form));
+  const thumbnailKey = Form.useWatch('thumbnail_s3_key', form);
 
   useEffect(() => {
     if (!open) return;
@@ -321,6 +401,7 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
         asset_type: asset.asset_type,
         category_id: asset.category_id ?? undefined,
         s3_key: asset.s3_key ?? undefined,
+        thumbnail_s3_key: asset.thumbnail_s3_key ?? undefined,
         is_premium: isTrue(asset.is_premium),
         status: asset.status || 'active',
         tag_ids: [],
@@ -345,6 +426,24 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
     } catch {
       return;
     }
+    // The server accepts a premium asset with no preview, and there is nothing
+    // it could infer one from — so this is the only place the gap gets caught.
+    if (values.is_premium && !values.thumbnail_s3_key) {
+      const proceed = await new Promise((resolve) => {
+        modal.confirm({
+          title: 'Save this premium asset with no preview?',
+          content:
+            'Its file is withheld from anyone who has not paid, and there is no preview to show instead — the app will render an empty card. It stays in the "No preview" queue until one is uploaded.',
+          okText: 'Save anyway',
+          cancelText: 'Add a preview',
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+        });
+      });
+      if (!proceed) return;
+    }
+
+    const thumbnail = values.thumbnail_s3_key?.trim();
     const body = {
       name: values.name.trim(),
       asset_type: values.asset_type,
@@ -353,6 +452,10 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
       is_premium: values.is_premium ? 1 : 0,
       status: values.status,
     };
+    // Optional + nullable: send the key when there is one, send null only to
+    // clear a stored key, and otherwise leave the field out of the payload.
+    if (thumbnail) body.thumbnail_s3_key = thumbnail;
+    else if (isEdit && asset.thumbnail_s3_key) body.thumbnail_s3_key = null;
 
     setSubmitting(true);
     try {
@@ -387,7 +490,7 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
       title={isEdit ? `Edit "${asset?.name}"` : 'New Asset'}
       open={open}
       onClose={onClose}
-      width={620}
+      width={720}
       destroyOnClose
       footer={
         <div style={{ textAlign: 'right' }}>
@@ -414,13 +517,58 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
           <Select options={typeOptions} placeholder="Select a type" />
         </Form.Item>
 
-        <Form.Item
-          name="s3_key"
-          label="File"
-          rules={[{ required: true, message: 'A file is required' }]}
-        >
-          <AssetFileUpload assetType={assetType} />
-        </Form.Item>
+        {/* Two image slots, always labelled. An unlabelled pair is how the
+            original artwork ends up uploaded as its own "preview". */}
+        <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <Form.Item
+            name="s3_key"
+            label="Asset file"
+            style={{ flex: '1 1 260px' }}
+            extra="The real deliverable. Withheld from non-paying users on a premium asset."
+            rules={[{ required: true, message: 'A file is required' }]}
+          >
+            <AssetFileUpload assetType={assetType} />
+          </Form.Item>
+
+          <Form.Item
+            name="thumbnail_s3_key"
+            label="Preview shown to non-paying users"
+            style={{ flex: '1 1 260px' }}
+            tooltip="Returned to everyone — guests, free plans, paid plans — whatever the asset is. An mp3 or a Lottie file still needs an image here."
+            extra="Upload a small, watermarked, flattened copy. Never the original artwork."
+            rules={[
+              // The server stores whatever key it is given: it cannot tell a
+              // 150px watermarked preview from a second copy of the artwork.
+              ({ getFieldValue }) => ({
+                validator: (_r, v) =>
+                  v && v === getFieldValue('s3_key')
+                    ? Promise.reject(
+                        new Error(
+                          'That is the asset file itself — using it as the preview hands the artwork to people who have not paid.',
+                        ),
+                      )
+                    : Promise.resolve(),
+              }),
+            ]}
+          >
+            <ImageUploadField slot="asset_thumbnail" accept="image/*" />
+          </Form.Item>
+        </div>
+
+        {isPremium && !thumbnailKey && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 24 }}
+            message="This premium asset has no preview"
+            description={
+              <Paragraph style={{ marginBottom: 0 }}>
+                Its file is not sent to anyone who has not paid, so the app has nothing to draw and
+                shows an empty card. A preview is what sells it.
+              </Paragraph>
+            }
+          />
+        )}
 
         <Form.Item name="category_id" label="Category">
           <Select

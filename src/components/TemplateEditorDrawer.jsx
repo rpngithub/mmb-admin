@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Drawer,
   Tabs,
@@ -22,6 +22,7 @@ import {
   CloseCircleFilled,
   LoadingOutlined,
   CheckOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
@@ -300,6 +301,36 @@ const RELATION_KEYS = {
 };
 const SAVE_DEBOUNCE_MS = 600;
 
+/**
+ * Every selected industry plus its ancestor chain, in selection order.
+ *
+ * Users pick an industry and, from that industry's tags, their tags at signup —
+ * and the app serves templates by that pair. So a tag that isn't on the
+ * template's industries can never match anyone, which is why the Tags picker is
+ * scoped to these rows rather than to the whole tag table. A child industry
+ * inherits its parents' tags (someone under "Salon & Spa" is also offered the
+ * tags of "Beauty & Wellness"), so the walk goes all the way to the root.
+ */
+function industryScope(ids, byId) {
+  const out = [];
+  const seen = new Set();
+  ids.forEach((id) => {
+    let node = byId.get(id);
+    // parent_id is admin-editable, so a cycle is possible — without this guard
+    // one would spin the render forever.
+    const guard = new Set();
+    while (node && !guard.has(node.id)) {
+      guard.add(node.id);
+      if (!seen.has(node.id)) {
+        seen.add(node.id);
+        out.push(node);
+      }
+      node = node.parent_id != null ? byId.get(node.parent_id) : null;
+    }
+  });
+  return out;
+}
+
 const relationsToValue = (relations) => ({
   tags: (relations?.Tags || []).map((t) => t.id),
   sizes: (relations?.TemplateSizes || []).map((s) => s.id),
@@ -310,6 +341,7 @@ const relationsToValue = (relations) => ({
 
 function RelationsPanel({ uid }) {
   const { message } = App.useApp();
+  const perms = usePermissions();
   const { data: relations, isFetching } = adminApi.endpoints.templateRelations.useQuery(uid, {
     skip: !uid,
   });
@@ -318,9 +350,15 @@ function RelationsPanel({ uid }) {
   const { data: variants } = adminApi.endpoints.variantsList.useQuery();
   const { data: businessCategories } = adminApi.endpoints.businessCategoriesList.useQuery();
   const [setRelations] = adminApi.endpoints.templateSetRelations.useMutation();
+  const [createTag] = adminApi.endpoints.tagsCreate.useMutation();
+  const [setIndustryTags] = adminApi.endpoints.businessCategorySetTags.useMutation();
+  const [fetchIndustries] = adminApi.endpoints.businessCategoriesList.useLazyQuery();
 
   const [value, setValue] = useState({ tags: [], sizes: [], variants: [], business: [] });
   const [saveState, setSaveState] = useState({}); // key → 'saving' | 'saved'
+  const [newTagName, setNewTagName] = useState('');
+  const [newTagIndustry, setNewTagIndustry] = useState(null);
+  const [addingTag, setAddingTag] = useState(false);
 
   const serverRef = useRef({ tags: [], sizes: [], variants: [], business: [] }); // last known-good
   const pendingRef = useRef({}); // key → ids awaiting (or mid-) save
@@ -386,7 +424,52 @@ function RelationsPanel({ uid }) {
     [setRelations, uid],
   );
 
-  const tagOptions = (tags || []).map((x) => ({ label: x.name, value: x.id }));
+  const industriesById = useMemo(
+    () => new Map((businessCategories || []).map((c) => [c.id, c])),
+    [businessCategories],
+  );
+  // The selected industries + their ancestors, and the tags reachable from them.
+  const scope = useMemo(
+    () => industryScope(value.business, industriesById),
+    [value.business, industriesById],
+  );
+  const scopedTags = useMemo(() => {
+    const m = new Map();
+    scope.forEach((c) =>
+      (Array.isArray(c.Tags) ? c.Tags : []).forEach((t) => {
+        if (!m.has(t.id)) m.set(t.id, t);
+      }),
+    );
+    return m;
+  }, [scope]);
+  const tagsById = useMemo(() => new Map((tags || []).map((t) => [t.id, t])), [tags]);
+  const hasIndustry = value.business.length > 0;
+
+  const tagOptions = useMemo(() => {
+    // No industry yet → nothing to scope by, so fall back to the full table
+    // rather than leaving the admin with an empty picker: Tags are required to
+    // publish, and a template filed under a Category alone has no industry.
+    if (!hasIndustry) return (tags || []).map((x) => ({ label: x.name, value: x.id }));
+    const groups = [];
+    if (scopedTags.size) {
+      groups.push({
+        label: `Tags of ${scope.map((c) => c.name).join(', ')}`,
+        options: [...scopedTags.values()].map((t) => ({ label: t.name, value: t.id })),
+      });
+    }
+    // Tags already on the template from before (or from an industry since
+    // removed) still have to be listed — an option-less value renders as a raw
+    // id and would be silently dropped on the next edit.
+    const strays = value.tags.filter((id) => !scopedTags.has(id));
+    if (strays.length) {
+      groups.push({
+        label: 'On this template, but not on those industries',
+        options: strays.map((id) => ({ label: tagsById.get(id)?.name || `#${id}`, value: id })),
+      });
+    }
+    return groups;
+  }, [hasIndustry, tags, scope, scopedTags, value.tags, tagsById]);
+
   const sizeOptions = (sizes || []).map((s) => ({
     label: `${s.name} (${s.width}×${s.height})`,
     value: s.id,
@@ -394,7 +477,72 @@ function RelationsPanel({ uid }) {
   const variantOptions = (variants || []).map((x) => ({ label: x.name, value: x.id }));
   const businessOptions = (businessCategories || []).map((x) => ({ label: x.name, value: x.id }));
 
-  const field = (label, key, options, required) => (
+  // A new tag has to land on an industry to be reachable at signup, so creating
+  // one needs write access to both tables — and a target industry.
+  const canCreateTags = perms.can('tags', 'create') && perms.can('categories', 'update');
+  const targetIndustryId = value.business.includes(newTagIndustry)
+    ? newTagIndustry
+    : (value.business[0] ?? null);
+  const targetIndustry = industriesById.get(targetIndustryId);
+
+  /**
+   * PUT …/business-categories/:uid/tags is a FULL REPLACE, so the payload has to
+   * be the industry's current tags plus this one — seeded from a fresh read, not
+   * from the drawer's copy, because any tag missing from the array is deleted.
+   * Returns whether the industry actually got the tag.
+   */
+  const attachTagToIndustry = async (industry, tag) => {
+    let row = industry;
+    try {
+      const fresh = await fetchIndustries(undefined, false).unwrap();
+      row = (fresh || []).find((c) => c.id === industry.id) || row;
+    } catch {
+      // Fall back to the cached row — it carries Tags[] too.
+    }
+    if (!Array.isArray(row?.Tags)) {
+      message.warning(
+        `“${tag.name}” was not added to ${industry.name} — its current tags could not be read. Add it on the Industries page.`,
+      );
+      return false;
+    }
+    const ids = row.Tags.map((t) => t.id);
+    if (ids.includes(tag.id)) return true;
+    try {
+      await setIndustryTags({ uid: row.uid, tag_ids: [...ids, tag.id] }).unwrap();
+      return true;
+    } catch (err) {
+      message.error(
+        `Could not add “${tag.name}” to ${industry.name}${err?.message ? `: ${err.message}` : '.'} It is still on this template.`,
+      );
+      return false;
+    }
+  };
+
+  const addTag = async () => {
+    const name = newTagName.trim();
+    if (!name || !targetIndustry || addingTag) return;
+    setAddingTag(true);
+    try {
+      // The picker is scoped, so a tag the admin can't see may still exist —
+      // reuse it by name instead of POSTing a certain 409 duplicate.
+      let tag = (tags || []).find((t) => t.name?.trim().toLowerCase() === name.toLowerCase());
+      if (!tag) tag = await createTag({ name }).unwrap();
+
+      const attached = await attachTagToIndustry(targetIndustry, tag);
+      // template_tags — through the same debounced auto-save as every other pick.
+      if (!value.tags.includes(tag.id)) onPick('tags')([...value.tags, tag.id]);
+      setNewTagName('');
+      if (attached) {
+        message.success(`“${tag.name}” added to ${targetIndustry.name} and to this template`);
+      }
+    } catch {
+      // Tag creation errors are surfaced by baseQuery.
+    } finally {
+      setAddingTag(false);
+    }
+  };
+
+  const field = (label, key, options, { required, hint, footer, notFound } = {}) => (
     <div>
       <Space size={8}>
         <Text type="secondary">{label}</Text>
@@ -419,9 +567,58 @@ function RelationsPanel({ uid }) {
         options={options}
         optionFilterProp="label"
         placeholder={`Select ${label.toLowerCase()}`}
+        notFoundContent={notFound}
       />
+      {hint && (
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          {hint}
+        </Text>
+      )}
+      {footer}
     </div>
   );
+
+  const tagCreator = canCreateTags ? (
+    <div style={{ marginTop: 8 }}>
+      <Space.Compact style={{ width: '100%' }}>
+        <Input
+          placeholder="New tag name"
+          value={newTagName}
+          disabled={!targetIndustry}
+          onChange={(e) => setNewTagName(e.target.value)}
+          onPressEnter={(e) => {
+            e.preventDefault();
+            addTag();
+          }}
+        />
+        {value.business.length > 1 && (
+          <Select
+            style={{ width: 220 }}
+            value={targetIndustryId}
+            onChange={setNewTagIndustry}
+            optionFilterProp="label"
+            options={value.business.map((id) => ({
+              label: industriesById.get(id)?.name || `#${id}`,
+              value: id,
+            }))}
+          />
+        )}
+        <Button
+          icon={<PlusOutlined />}
+          loading={addingTag}
+          disabled={!targetIndustry || !newTagName.trim()}
+          onClick={addTag}
+        >
+          Add tag
+        </Button>
+      </Space.Compact>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        {targetIndustry
+          ? `Creates the tag if it is new, adds it to ${targetIndustry.name}’s tags, and puts it on this template.`
+          : 'Pick an industry above to add a new tag.'}
+      </Text>
+    </div>
+  ) : null;
 
   return (
     <Spin spinning={isFetching}>
@@ -430,10 +627,22 @@ function RelationsPanel({ uid }) {
           Each picker saves itself as you select — no save button. Every picker is a full replace of
           that one relation; Category is set on the Details tab, not here.
         </Paragraph>
-        {field('Tags', 'tags', tagOptions, true)}
-        {field('Sizes', 'sizes', sizeOptions, true)}
+        {/* Industries first: it is what scopes the Tags picker below it. */}
+        {field('Industries', 'business', businessOptions, {
+          hint: 'Sets which tags can be picked below — users choose an industry, then its tags, at signup.',
+        })}
+        {field('Tags', 'tags', tagOptions, {
+          required: true,
+          hint: !hasIndustry
+            ? 'Showing every tag. Pick an industry above to narrow this to that industry’s tags.'
+            : scope.length
+              ? `Showing the tags of ${scope.map((c) => c.name).join(', ')} — the same set those users pick from.`
+              : 'Loading the selected industries…',
+          notFound: hasIndustry ? 'No tags on the selected industries yet' : undefined,
+          footer: tagCreator,
+        })}
+        {field('Sizes', 'sizes', sizeOptions, { required: true })}
         {field('Variants', 'variants', variantOptions)}
-        {field('Industries', 'business', businessOptions)}
       </Space>
     </Spin>
   );

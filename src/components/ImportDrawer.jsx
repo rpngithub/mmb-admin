@@ -65,6 +65,10 @@ const IMPORT_SPECS = {
         's3_key',
         'Required. Key of a file already in S3, under assets/<asset_type>/. A full https:// console or CDN URL is accepted and trimmed down to the key.',
       ],
+      [
+        'thumbnail_s3_key',
+        'The preview shown to users who have not paid — an image, under assets/thumbnail/, whatever the asset type is. Blank keeps the current one, NONE removes it. Effectively required on a premium row: without it the app shows an empty card.',
+      ],
       ['is_premium', '1 = paid plans only, 0 = free.'],
       ['status', 'active or inactive (1/0 also accepted).'],
       [
@@ -191,6 +195,11 @@ export default function ImportDrawer({ open, entity, onClose, onImported }) {
                   re-tags, re-prices) instead of creating duplicates.
                 </Paragraph>
                 <Paragraph style={{ marginBottom: 4 }}>
+                  That is also the quickest way to add missing previews in bulk: take a sheet of the
+                  assets you are fixing, fill in <Text code>thumbnail_s3_key</Text>, and re-import —
+                  they are updated in place.
+                </Paragraph>
+                <Paragraph style={{ marginBottom: 4 }}>
                   Changing the <Text code>s3_key</Text> cell does <Text strong>not</Text> replace the
                   file — it creates a <Text strong>new</Text> asset and leaves the old one behind.
                   Replacing a file means deleting the old asset.
@@ -289,6 +298,14 @@ export default function ImportDrawer({ open, entity, onClose, onImported }) {
                           { title: 'File types', dataIndex: 2 },
                         ]}
                       />
+                      <Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
+                        Previews are the exception: <Text code>thumbnail_s3_key</Text> always lives
+                        under{' '}
+                        <Text code copyable={{ text: 'assets/thumbnail/' }}>
+                          assets/thumbnail/
+                        </Text>{' '}
+                        and is always an image (png, jpg, webp), even for an audio or video asset.
+                      </Paragraph>
                       <Paragraph type="secondary" style={{ margin: '8px 0 0' }}>
                         <Text code>font</Text> is not an asset type — library fonts live on the
                         Fonts screen.
