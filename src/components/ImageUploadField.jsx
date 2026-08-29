@@ -10,6 +10,15 @@ import { imageUrl, useCdnBaseUrl } from '../lib/cdn';
 const ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';
 const MAX_MB = 5;
 
+// `accept` entries are exact MIME types or a `type/*` wildcard (`image/*`).
+function typeAllowed(fileType, accept) {
+  if (!fileType) return false;
+  return accept
+    .split(',')
+    .map((a) => a.trim())
+    .some((a) => (a.endsWith('/*') ? fileType.startsWith(a.slice(0, -1)) : a === fileType));
+}
+
 /**
  * Controlled image upload bound to a Form.Item. Its form value is the confirmed
  * S3 `key` (string) or undefined. Upload runs the 3-step direct-to-S3 flow:
@@ -20,8 +29,11 @@ const MAX_MB = 5;
  *
  * The resolved `key` is then stored via onChange; the caller persists it onto
  * the category. Preview is rendered from `${cdn_base_url}/${key}`.
+ *
+ * `accept` widens the default PNG/JPG/WebP/SVG list where the slot genuinely
+ * takes any image (asset previews accept GIF too).
  */
-export default function ImageUploadField({ value, onChange, slot, disabled }) {
+export default function ImageUploadField({ value, onChange, slot, disabled, accept = ACCEPT }) {
   const { message } = App.useApp();
   const cdnBase = useCdnBaseUrl();
   const [presign] = useUploadPresignMutation();
@@ -29,9 +41,12 @@ export default function ImageUploadField({ value, onChange, slot, disabled }) {
   const [uploading, setUploading] = useState(false);
 
   const beforeUpload = (file) => {
-    const okType = file.type && ACCEPT.split(',').includes(file.type);
-    if (!okType) {
-      message.error('Please choose a PNG, JPG, WebP or SVG image.');
+    if (!typeAllowed(file.type, accept)) {
+      message.error(
+        accept === ACCEPT
+          ? 'Please choose a PNG, JPG, WebP or SVG image.'
+          : 'Please choose an image file.',
+      );
       return Upload.LIST_IGNORE;
     }
     if (file.size / 1024 / 1024 > MAX_MB) {
@@ -57,8 +72,13 @@ export default function ImageUploadField({ value, onChange, slot, disabled }) {
     });
     if (!res.ok) throw new Error(`S3 upload failed (${res.status})`);
 
-    // 3. confirm: pending → active
-    await confirm([key]).unwrap();
+    // 3. confirm: pending → active. A 200 is per-key — an object that stays
+    // `rejected` is swept by the bucket lifecycle rule, so never store its key.
+    const confirmed = await confirm([key]).unwrap();
+    const outcome = confirmed?.results?.find((r) => r.key === key);
+    if (outcome && outcome.status !== 'confirmed') {
+      throw new Error(outcome.reason || 'The upload was rejected — try again.');
+    }
     return key;
   };
 
@@ -111,7 +131,7 @@ export default function ImageUploadField({ value, onChange, slot, disabled }) {
         {!disabled && (
           <Space size={4}>
             <Upload
-              accept={ACCEPT}
+              accept={accept}
               showUploadList={false}
               beforeUpload={beforeUpload}
               customRequest={customRequest}
@@ -137,7 +157,7 @@ export default function ImageUploadField({ value, onChange, slot, disabled }) {
 
   return (
     <Upload
-      accept={ACCEPT}
+      accept={accept}
       listType="picture-card"
       showUploadList={false}
       beforeUpload={beforeUpload}

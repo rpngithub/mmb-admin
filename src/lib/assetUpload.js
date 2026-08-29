@@ -19,6 +19,20 @@ export function isAbortError(err) {
 }
 
 /**
+ * uploads/confirm answers PER KEY: a 200 can still carry
+ * `{ status:'rejected', reason }` for the key we just uploaded, and a rejected
+ * object stays tagged `pending` and is swept by the bucket lifecycle rule.
+ * Storing that key would leave the record pointing at a file about to vanish.
+ */
+async function confirmKey(confirm, key) {
+  const res = await confirm([key]).unwrap();
+  const outcome = res?.results?.find((r) => r.key === key);
+  if (outcome && outcome.status !== 'confirmed') {
+    throw new Error(outcome.reason || 'The upload was rejected — try again.');
+  }
+}
+
+/**
  * PUT a body to a presigned URL with progress + abort. `registerXhr(xhr)` lets
  * the caller keep a handle to abort the in-flight request. Resolves with the
  * response ETag (needed for multipart complete).
@@ -66,7 +80,7 @@ export async function uploadSingle({ file, target, presign, confirm, onProgress,
     { onProgress: (loaded, total) => onProgress?.(total ? loaded / total : 0), registerXhr },
   );
 
-  if (confirm) await confirm([key]).unwrap();
+  if (confirm) await confirmKey(confirm, key);
   return key;
 }
 
@@ -162,6 +176,6 @@ export async function uploadMultipart({
     completed.push({ part_number: i, etag: session.etags[i] });
   }
   await complete({ key: session.key, upload_id: session.upload_id, parts: completed }).unwrap();
-  if (confirm) await confirm([session.key]).unwrap();
+  if (confirm) await confirmKey(confirm, session.key);
   return session.key;
 }
