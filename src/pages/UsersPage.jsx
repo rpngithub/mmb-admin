@@ -12,7 +12,8 @@ import {
   Tabs,
   App,
 } from 'antd';
-import { ReloadOutlined, EyeOutlined } from '@ant-design/icons';
+import { ReloadOutlined, EyeOutlined, BellOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
   useUsersListQuery,
@@ -159,6 +160,9 @@ function UserDetailDrawer({ uid, onClose }) {
   const perms = usePermissions();
   const { data, isFetching } = useUserGetQuery(uid, { skip: !uid });
   const canSeeGrants = perms.can('quota_packs', 'update');
+  // "They say they never got it" starts here. The delivery log filters by the
+  // numeric user_id, which only the detail record carries.
+  const canSeeNotifications = perms.canRead('notifications') && data?.id != null;
 
   const details = (
     <Descriptions column={1} bordered size="small">
@@ -195,6 +199,13 @@ function UserDetailDrawer({ uid, onClose }) {
       width={canSeeGrants ? 900 : 520}
       destroyOnClose
       loading={isFetching}
+      extra={
+        canSeeNotifications ? (
+          <Link to={`/notification-log?user_id=${data.id}`}>
+            <Button icon={<BellOutlined />}>Notifications sent</Button>
+          </Link>
+        ) : null
+      }
     >
       <Tabs items={items} />
     </Drawer>

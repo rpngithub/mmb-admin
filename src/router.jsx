@@ -30,6 +30,10 @@ import CouponsPage from './pages/CouponsPage';
 import LanguagesPage from './pages/LanguagesPage';
 import FontsPage from './pages/FontsPage';
 import FeedbackPage from './pages/FeedbackPage';
+import NotificationCategoriesPage from './pages/NotificationCategoriesPage';
+import NotificationTemplatesPage from './pages/NotificationTemplatesPage';
+import NotificationCampaignsPage from './pages/NotificationCampaignsPage';
+import UserNotificationsPage from './pages/UserNotificationsPage';
 import GenericResourcePage from './pages/GenericResourcePage';
 import NotFound from './pages/NotFound';
 import { RESOURCES } from './resources';
@@ -110,6 +114,43 @@ export default function AppRouter() {
         />
         {/* Bulk CSV import — self-gates permission (needs read on categories OR variants). */}
         <Route path="bulk-import" element={<BulkImportPage />} />
+        {/* Notifications. Templates, categories and the delivery log run on
+            `notifications` — a content_admin holds it. Campaigns run on
+            `notification_campaigns`, which only super_admin has: every campaign
+            endpoint 403s for anyone else, so the guard matches the API rather
+            than letting them into a screen that cannot load. */}
+        <Route
+          path="notification-templates"
+          element={
+            <RequirePermission domain="notifications">
+              <NotificationTemplatesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="notification-categories"
+          element={
+            <RequirePermission domain="notifications">
+              <NotificationCategoriesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="notification-campaigns"
+          element={
+            <RequirePermission domain="notification_campaigns">
+              <NotificationCampaignsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="notification-log"
+          element={
+            <RequirePermission domain="notifications">
+              <UserNotificationsPage />
+            </RequirePermission>
+          }
+        />
         <Route
           path="activity-logs"
           element={
