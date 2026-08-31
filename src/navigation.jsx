@@ -20,6 +20,10 @@ import {
   SmileOutlined,
   BorderOuterOutlined,
   ThunderboltOutlined,
+  BellOutlined,
+  NotificationOutlined,
+  SendOutlined,
+  InboxOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -28,12 +32,22 @@ const GROUP_META = {
   Access: { icon: <SafetyCertificateOutlined /> },
   Catalog: { icon: <AppstoreOutlined /> },
   Content: { icon: <PictureOutlined /> },
+  Notifications: { icon: <BellOutlined /> },
   Billing: { icon: <CreditCardOutlined /> },
   System: { icon: <SettingOutlined /> },
   Audit: { icon: <AuditOutlined /> },
 };
 
-const GROUP_ORDER = ['People', 'Access', 'Catalog', 'Content', 'Billing', 'System', 'Audit'];
+const GROUP_ORDER = [
+  'People',
+  'Access',
+  'Catalog',
+  'Content',
+  'Notifications',
+  'Billing',
+  'System',
+  'Audit',
+];
 
 const ICON_BY_KEY = {
   roles: <SafetyCertificateOutlined />,
@@ -106,6 +120,38 @@ const SPECIAL_ITEMS = [
     anyPermission: ['categories', 'variants'],
     group: 'Catalog',
     icon: <ImportOutlined />,
+  },
+  // Notifications. The first three run on `notifications` (content_admin holds
+  // it); Campaigns runs on `notification_campaigns`, which only super_admin has
+  // — so for a content_admin that one item simply isn't there, rather than
+  // clicking through to a screen every request 403s on.
+  {
+    key: '/notification-templates',
+    label: 'Notifications',
+    permission: 'notifications',
+    group: 'Notifications',
+    icon: <NotificationOutlined />,
+  },
+  {
+    key: '/notification-categories',
+    label: 'Categories',
+    permission: 'notifications',
+    group: 'Notifications',
+    icon: <AppstoreOutlined />,
+  },
+  {
+    key: '/notification-campaigns',
+    label: 'Campaigns',
+    permission: 'notification_campaigns',
+    group: 'Notifications',
+    icon: <SendOutlined />,
+  },
+  {
+    key: '/notification-log',
+    label: 'Delivery Log',
+    permission: 'notifications',
+    group: 'Notifications',
+    icon: <InboxOutlined />,
   },
   {
     key: '/activity-logs',

@@ -54,5 +54,23 @@ export const PERMISSION_CATALOG = [
     hint: 'packs & user quota grants — commerce, not content',
     actions: ALL,
   },
+  // Notifications are split across TWO domains on purpose. `notifications`
+  // covers the categories, the templates and the read-only delivery log — the
+  // day-to-day copy editing a content_admin does. Sending a one-off blast to
+  // tens of thousands of people is a different kind of act, so it sits behind
+  // `notification_campaigns`, which only super_admin holds out of the box.
+  // Granting one does NOT grant the other.
+  {
+    domain: 'notifications',
+    label: 'Notifications',
+    hint: 'categories, templates & delivery log',
+    actions: ALL,
+  },
+  {
+    domain: 'notification_campaigns',
+    label: 'Notification Campaigns',
+    hint: 'one-off blasts — super admin only; separate from notifications',
+    actions: ALL,
+  },
   { domain: 'settings', label: 'App Settings', actions: ALL },
 ];

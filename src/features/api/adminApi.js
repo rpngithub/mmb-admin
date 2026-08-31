@@ -24,6 +24,9 @@ const SPECIAL_TAGS = [
   'Feedback',
   'QuotaPack',
   'QuotaGrant',
+  'NotificationTemplates',
+  'NotificationCampaigns',
+  'UserNotifications',
 ];
 
 /**
@@ -1175,6 +1178,233 @@ export const adminApi = createApi({
       invalidatesTags: [{ type: 'Feedback', id: 'LIST' }],
     }),
 
+    // ---- Notification categories -------------------------------------------
+    // The bucket a notification belongs to, and the thing a USER MUTES — which
+    // is why renaming one is the common edit and creating one is rare. Ten are
+    // seeded. List/get/delete run on the generated notificationCategories*
+    // endpoints; create/update are dedicated + silent so the editor maps a
+    // duplicate-name 409 (case-insensitive) and details[].field onto the form.
+    //
+    // `slug` is auto-derived from `name` ON CREATE ONLY and is NEVER re-derived
+    // on a rename — an existing slug is a key clients and dedupe keys hold. To
+    // change it you pass one explicitly, which is a separate, deliberate act.
+    notificationCategoryCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/notification-categories', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'notificationCategories', id: 'LIST' }],
+    }),
+    notificationCategoryUpdate: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/notification-categories/${uid}`,
+        method: 'PATCH',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'notificationCategories', id: uid },
+        { type: 'notificationCategories', id: 'LIST' },
+        // A renamed/retired category shows in the templates list's Category column.
+        { type: 'NotificationTemplates', id: 'LIST' },
+      ],
+    }),
+    // Bulk reorder — send the FULL ordered list of uids; array position becomes
+    // display_order, in one all-or-nothing transaction. Silent: the page patches
+    // the cache optimistically and rolls back + toasts error.message on failure.
+    notificationCategoriesReorder: builder.mutation({
+      query: (ids) => ({
+        url: '/admin/notification-categories/reorder',
+        method: 'PATCH',
+        body: { ids },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'notificationCategories', id: 'LIST' }],
+    }),
+
+    // ---- Notification templates ---------------------------------------------
+    // 43 rows ship built in (`is_system: true`). For those, `code`,
+    // `trigger_type` and `trigger_config` are immutable — a PATCH changing any of
+    // them returns 403 — but everything else (title, body, CTA, image, audience,
+    // throttle, is_active) is editable, which is the entire point of the screen.
+    //
+    // NOT PAGINATED: every row comes back in one call, with no meta.total, no
+    // limit and no offset. 43 templates, so the screen filters and sorts them
+    // client-side. Each row carries its category nested as NotificationCategory.
+    //
+    // TWO RETURNED FIELDS ARE NEVER SENT BACK. `variables` is server-owned (on a
+    // built-in row it is the fixed set of placeholders that notification can
+    // fill; on a custom one it is derived from the text) and `priority` is an
+    // internal send-order tiebreak. Either one in a body is a 400 "is not
+    // allowed", so bodies are built from an explicit whitelist rather than from a
+    // fetched row. Silent create/update: the placeholder 400 names both the bad
+    // token and every valid one, and is shown verbatim.
+    notificationTemplatesList: builder.query({
+      query: (params = {}) => ({
+        url: '/admin/notification-templates',
+        params: cleanParams(params),
+      }),
+      providesTags: (result) =>
+        Array.isArray(result)
+          ? [
+              ...result.map((t) => ({ type: 'NotificationTemplates', id: t.uid })),
+              { type: 'NotificationTemplates', id: 'LIST' },
+            ]
+          : [{ type: 'NotificationTemplates', id: 'LIST' }],
+    }),
+    notificationTemplateGet: builder.query({
+      query: (uid) => ({ url: `/admin/notification-templates/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'NotificationTemplates', id: uid }],
+    }),
+    notificationTemplateCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/notification-templates', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'NotificationTemplates', id: 'LIST' }],
+    }),
+    notificationTemplateUpdate: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/notification-templates/${uid}`,
+        method: 'PATCH',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'NotificationTemplates', id: uid },
+        { type: 'NotificationTemplates', id: 'LIST' },
+      ],
+    }),
+    // SOFT delete: returns 200 but sets is_active = 0 rather than removing the
+    // row, so the template comes back in the list with an "Inactive" tag. The UI
+    // calls it Deactivate, because that is what it does.
+    notificationTemplateRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/notification-templates/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'NotificationTemplates', id: uid },
+        { type: 'NotificationTemplates', id: 'LIST' },
+      ],
+    }),
+
+    // ---- Notification campaigns (super_admin only) --------------------------
+    // Permission domain `notification_campaigns`, NOT `notifications`: a
+    // content_admin gets 403 on every endpoint below, so the nav item and route
+    // are hidden from them rather than leading to a dead screen.
+    //
+    // `status` is NOT editable via PATCH. It moves only through schedule /
+    // send-now / cancel, along draft → scheduled → sending → sent, with
+    // cancelled / failed as terminal outcomes. A campaign past draft/scheduled
+    // cannot be edited at all — PATCH returns 403 — so the editor goes read-only
+    // and offers "Duplicate into a new draft" instead.
+    //
+    // NOT PAGINATED — filters are `status` and `template_id`, everything else is
+    // client-side.
+    notificationCampaignsList: builder.query({
+      query: (params = {}) => ({
+        url: '/admin/notification-campaigns',
+        params: cleanParams(params),
+      }),
+      providesTags: (result) =>
+        Array.isArray(result)
+          ? [
+              ...result.map((c) => ({ type: 'NotificationCampaigns', id: c.uid })),
+              { type: 'NotificationCampaigns', id: 'LIST' },
+            ]
+          : [{ type: 'NotificationCampaigns', id: 'LIST' }],
+    }),
+    notificationCampaignGet: builder.query({
+      query: (uid) => ({ url: `/admin/notification-campaigns/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'NotificationCampaigns', id: uid }],
+    }),
+    // Silent: campaign 400s are explanatory (the rejected audience key, the
+    // {{placeholder}} that can't be in campaign copy) and are shown verbatim.
+    notificationCampaignCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/notification-campaigns', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'NotificationCampaigns', id: 'LIST' }],
+    }),
+    notificationCampaignUpdate: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/notification-campaigns/${uid}`,
+        method: 'PATCH',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'NotificationCampaigns', id: uid },
+        { type: 'NotificationCampaigns', id: 'LIST' },
+      ],
+    }),
+    notificationCampaignRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/notification-campaigns/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'NotificationCampaigns', id: uid },
+        { type: 'NotificationCampaigns', id: 'LIST' },
+      ],
+    }),
+
+    // The preview is a REQUIRED step, not a nicety: it returns audience_count,
+    // a sample of recipients, the resolved copy, and a `note` explaining why the
+    // delivered count will be lower than the count shown. Send/Schedule stay
+    // disabled until it has been run, so nobody files "sent 8,412 of 10,000" as a
+    // bug when it is the fatigue and consent gates working as designed.
+    //
+    // A mutation rather than a query despite being a GET: it must be run on
+    // demand (and re-run after an edit), never served from cache as if it were
+    // still current.
+    notificationCampaignPreview: builder.mutation({
+      query: (uid) => ({ url: `/admin/notification-campaigns/${uid}/preview` }),
+      extraOptions: { silent: true },
+    }),
+    // `scheduled_at` must be in the future. Scheduling SNAPSHOTS the previewed
+    // count into audience_count.
+    notificationCampaignSchedule: builder.mutation({
+      query: ({ uid, scheduled_at }) => ({
+        url: `/admin/notification-campaigns/${uid}/schedule`,
+        method: 'POST',
+        body: { scheduled_at },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'NotificationCampaigns', id: uid },
+        { type: 'NotificationCampaigns', id: 'LIST' },
+      ],
+    }),
+    // "Send now" QUEUES the campaign — a job writes it out in batches every 5
+    // minutes, so this does not mean "sent within a second". The list polls the
+    // climbing counters while a campaign is `sending`.
+    notificationCampaignSendNow: builder.mutation({
+      query: (uid) => ({ url: `/admin/notification-campaigns/${uid}/send-now`, method: 'POST' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'NotificationCampaigns', id: uid },
+        { type: 'NotificationCampaigns', id: 'LIST' },
+      ],
+    }),
+    notificationCampaignCancel: builder.mutation({
+      query: (uid) => ({ url: `/admin/notification-campaigns/${uid}/cancel`, method: 'POST' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'NotificationCampaigns', id: uid },
+        { type: 'NotificationCampaigns', id: 'LIST' },
+      ],
+    }),
+
+    // ---- Delivery log (read-only) -------------------------------------------
+    // An inbox row records something that HAPPENED, so there is no create, edit
+    // or delete here by design — editing one would make the audit trail
+    // worthless. This is the screen that answers "the customer says they never
+    // got it". The ONE paginated list in this section (limit default 50, max
+    // 100), newest first; rows carry the template code and the recipient's
+    // name/phone. Reached from a user, a campaign or a template with the
+    // corresponding filter pre-applied.
+    userNotificationsList: builder.query({
+      query: (params = {}) => ({ url: '/admin/user-notifications', params: cleanParams(params) }),
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: [{ type: 'UserNotifications', id: 'LIST' }],
+    }),
+
     // ---- Generic CRUD resources (generated from config) -------------------
     ...buildGenericEndpoints(builder),
   }),
@@ -1298,4 +1528,26 @@ export const {
   // Feedback
   useFeedbackListQuery,
   useFeedbackDeleteMutation,
+  // Notification categories (the bucket a user mutes)
+  useNotificationCategoryCreateMutation,
+  useNotificationCategoryUpdateMutation,
+  useNotificationCategoriesReorderMutation,
+  // Notification templates (43 seeded as system rows; soft delete)
+  useNotificationTemplatesListQuery,
+  useNotificationTemplateGetQuery,
+  useNotificationTemplateCreateMutation,
+  useNotificationTemplateUpdateMutation,
+  useNotificationTemplateRemoveMutation,
+  // Campaigns — `notification_campaigns`, super_admin only
+  useNotificationCampaignsListQuery,
+  useNotificationCampaignGetQuery,
+  useNotificationCampaignCreateMutation,
+  useNotificationCampaignUpdateMutation,
+  useNotificationCampaignRemoveMutation,
+  useNotificationCampaignPreviewMutation,
+  useNotificationCampaignScheduleMutation,
+  useNotificationCampaignSendNowMutation,
+  useNotificationCampaignCancelMutation,
+  // Delivery log (read-only audit)
+  useUserNotificationsListQuery,
 } = adminApi;

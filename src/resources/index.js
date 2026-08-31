@@ -494,6 +494,27 @@ export const RESOURCES = [
     group: 'Billing',
   }),
 
+  // Notification categories — the ten seeded buckets a notification belongs to,
+  // and the thing a user mutes. `hidden: true` drops the auto nav entry and
+  // `/r/...` route: the screen lives at /notification-categories
+  // (src/pages/NotificationCategoriesPage.jsx, wired in router.jsx) next to the
+  // other Notifications screens, because order is set by drag-reorder
+  // (PATCH …/reorder) and `slug` is never re-derived on a rename. This config
+  // exists for the generated notificationCategories* CRUD endpoints + cache tag;
+  // its fields/columns are unused.
+  //
+  // Domain is `notifications`, shared with templates and the delivery log — but
+  // NOT with campaigns, which are `notification_campaigns` (super_admin only).
+  resource({
+    key: 'notificationCategories',
+    name: 'Notification Categories',
+    title: 'Notification Category',
+    path: '/admin/notification-categories',
+    permission: 'notifications',
+    group: 'Notifications',
+    hidden: true,
+  }),
+
   // App Settings has a dedicated, type-aware page (src/pages/AppSettingsPage.jsx,
   // wired in router.jsx) — it does NOT use the generic ResourceManager. This
   // config is kept only so the nav entry, permission gating and the generated
