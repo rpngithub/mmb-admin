@@ -34,6 +34,7 @@ import NotificationCategoriesPage from './pages/NotificationCategoriesPage';
 import NotificationTemplatesPage from './pages/NotificationTemplatesPage';
 import NotificationCampaignsPage from './pages/NotificationCampaignsPage';
 import UserNotificationsPage from './pages/UserNotificationsPage';
+import PageContentPage from './pages/PageContentPage';
 import GenericResourcePage from './pages/GenericResourcePage';
 import NotFound from './pages/NotFound';
 import { RESOURCES } from './resources';
@@ -109,6 +110,15 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="categories">
               <HomepageCategoriesPage />
+            </RequirePermission>
+          }
+        />
+        {/* The copy under the template grid on industry pages — its own domain. */}
+        <Route
+          path="page-content"
+          element={
+            <RequirePermission domain="page_content">
+              <PageContentPage />
             </RequirePermission>
           }
         />
