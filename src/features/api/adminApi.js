@@ -27,6 +27,7 @@ const SPECIAL_TAGS = [
   'NotificationTemplates',
   'NotificationCampaigns',
   'UserNotifications',
+  'PageSections',
 ];
 
 /**
@@ -1405,6 +1406,124 @@ export const adminApi = createApi({
       providesTags: [{ type: 'UserNotifications', id: 'LIST' }],
     }),
 
+    // ---- Page content (the copy under the template grid on industry pages) ---
+    // A section (block) lives at one of two levels: a DEFAULT
+    // (business_category_id null) shown on every industry page, or an OVERRIDE
+    // (business_category_id set) that replaces that ONE block on that ONE page.
+    // Resolution is per block, so Travel can own "content_ideas" and still
+    // inherit "why_choose". Copy may carry {{industry}} / {{industry_lower}},
+    // which the server fills in per page.
+    //
+    // NOT paginated. Every section row carries its ordered `items` and its
+    // `BusinessCategory` (null on a default), so one call renders a whole block.
+    // `page_key` is always "industry" today and is sent on every call; a home or
+    // pricing page can be added later without an admin-panel release.
+    //
+    // One tag for the lot: any write to a section or an item can change the
+    // resolved page, the per-industry override counts AND the preview, so they
+    // all refetch together rather than tracking which of three lists moved.
+    //
+    // All silent: the 400s are explanatory (a section_key that is not
+    // lowercase snake_case, an item with no content, an empty PATCH) and are
+    // shown verbatim; a 409 means the view is stale and the page refetches.
+    pageSectionsList: builder.query({
+      // Pass business_category_id as the literal string "null" for the defaults
+      // — cleanParams drops a real null, so the caller spells it out.
+      query: (params = {}) => ({ url: '/admin/page-sections', params: cleanParams(params) }),
+      providesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionGet: builder.query({
+      query: (uid) => ({ url: `/admin/page-sections/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'PageSections', id: uid }],
+    }),
+    // The RESOLVED page for one industry, exactly as the website receives it:
+    // defaults and overrides already merged, tokens substituted, hidden blocks
+    // dropped, each section flagged `inherited: true | false`.
+    pageSectionsPreview: builder.query({
+      query: (params = {}) => ({
+        url: '/admin/page-sections/preview',
+        params: cleanParams(params),
+      }),
+      providesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/page-sections', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/page-sections/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'PageSections', id: uid },
+        { type: 'PageSections', id: 'LIST' },
+      ],
+    }),
+    // HARD delete — its items go with it. On an override this is "revert to
+    // default"; on a hide-only override it is "show again".
+    pageSectionRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/page-sections/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'PageSections', id: uid },
+        { type: 'PageSections', id: 'LIST' },
+      ],
+    }),
+    // Array position becomes display_order. Send every DEFAULT's uid from the
+    // defaults view, or ONLY the custom sections' uids from an industry view —
+    // inherited blocks keep the default's order.
+    pageSectionsReorder: builder.mutation({
+      query: (ids) => ({ url: '/admin/page-sections/reorder', method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    // Copies the default section(s) AND every item under them into new
+    // overrides for one industry. Omit section_keys to copy every default.
+    pageSectionsClone: builder.mutation({
+      query: (body) => ({ url: '/admin/page-sections/clone', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+
+    // Items — the cards / chips / steps inside a section. `section_id` is the
+    // INTEGER id, not the uid. At least one of title / body / icon_s3_key is
+    // required; a wholly empty item is a 400.
+    pageSectionItemsList: builder.query({
+      query: (params = {}) => ({
+        url: '/admin/page-section-items',
+        params: cleanParams(params),
+      }),
+      providesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionItemCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/page-section-items', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionItemUpdate: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/page-section-items/${uid}`,
+        method: 'PATCH',
+        body,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionItemRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/page-section-items/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+    pageSectionItemsReorder: builder.mutation({
+      query: (ids) => ({
+        url: '/admin/page-section-items/reorder',
+        method: 'PATCH',
+        body: { ids },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
+    }),
+
     // ---- Generic CRUD resources (generated from config) -------------------
     ...buildGenericEndpoints(builder),
   }),
@@ -1550,4 +1669,18 @@ export const {
   useNotificationCampaignCancelMutation,
   // Delivery log (read-only audit)
   useUserNotificationsListQuery,
+  // Page content — defaults + per-industry overrides under the template grid
+  usePageSectionsListQuery,
+  usePageSectionGetQuery,
+  usePageSectionsPreviewQuery,
+  usePageSectionCreateMutation,
+  usePageSectionUpdateMutation,
+  usePageSectionRemoveMutation,
+  usePageSectionsReorderMutation,
+  usePageSectionsCloneMutation,
+  usePageSectionItemsListQuery,
+  usePageSectionItemCreateMutation,
+  usePageSectionItemUpdateMutation,
+  usePageSectionItemRemoveMutation,
+  usePageSectionItemsReorderMutation,
 } = adminApi;

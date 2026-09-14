@@ -72,5 +72,13 @@ export const PERMISSION_CATALOG = [
     hint: 'one-off blasts — super admin only; separate from notifications',
     actions: ALL,
   },
+  // The marketing copy under the template grid on each industry's website
+  // page — the shared defaults and the per-industry overrides of them.
+  {
+    domain: 'page_content',
+    label: 'Page Content',
+    hint: 'industry page blocks — defaults & per-industry copy',
+    actions: ALL,
+  },
   { domain: 'settings', label: 'App Settings', actions: ALL },
 ];

@@ -24,6 +24,7 @@ import {
   NotificationOutlined,
   SendOutlined,
   InboxOutlined,
+  LayoutOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -112,6 +113,15 @@ const SPECIAL_ITEMS = [
     permission: 'categories',
     group: 'Catalog',
     icon: <AppstoreOutlined />,
+  },
+  // The marketing copy under the template grid on every industry's website
+  // page: shared defaults plus per-industry overrides, one block at a time.
+  {
+    key: '/page-content',
+    label: 'Page Content',
+    permission: 'page_content',
+    group: 'Content',
+    icon: <LayoutOutlined />,
   },
   {
     key: '/bulk-import',
