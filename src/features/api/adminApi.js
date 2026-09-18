@@ -706,6 +706,33 @@ export const adminApi = createApi({
       ],
     }),
 
+    // ---- Assets: "missing files" audit -----------------------------------
+    // The API HEADs every asset's s3_key / thumbnail_s3_key against the bucket
+    // and reports the rows whose file is confirmed gone. The FE never decides
+    // what is missing — it renders `data.missing` as returned. Both calls take
+    // the same optional filters (category_id — 0 = uncategorised — and
+    // asset_type). Silent: the drawer shows the readable 400s inline.
+    //
+    // The scan is a mutation on purpose even though it is a GET: it is an
+    // explicit action that must run fresh each time (a cached report would
+    // put a stale count in the delete confirm), and it must not be refetched
+    // by tag invalidation. It writes nothing, so it invalidates nothing.
+    assetsMissingFilesScan: builder.mutation({
+      query: (params = {}) => ({ url: '/admin/assets/missing-files', params: cleanParams(params) }),
+      extraOptions: { silent: true },
+    }),
+    // Re-scans with the same filters and deletes exactly the confirmed rows.
+    // Same shape back, plus summary.deleted; `missing` is then the deleted list.
+    assetsMissingFilesDelete: builder.mutation({
+      query: (params = {}) => ({
+        url: '/admin/assets/missing-files',
+        method: 'DELETE',
+        params: cleanParams(params),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, error) => (error ? [] : [{ type: 'assets', id: 'LIST' }]),
+    }),
+
     // ---- Multipart uploads (large asset files) ----------------------------
     // The single-PUT presign/confirm are shared with categories (uploadPresign
     // / uploadConfirm above). These add the resumable multipart flow. All
@@ -1588,6 +1615,8 @@ export const {
   useAssetsFilteredQuery,
   useAssetTagsQuery,
   useAssetSetTagsMutation,
+  useAssetsMissingFilesScanMutation,
+  useAssetsMissingFilesDeleteMutation,
   useMultipartInitiateMutation,
   useMultipartPresignPartsMutation,
   useMultipartCompleteMutation,

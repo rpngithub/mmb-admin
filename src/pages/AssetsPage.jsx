@@ -22,6 +22,7 @@ import {
   ImportOutlined,
   CopyOutlined,
   WarningOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
@@ -29,6 +30,7 @@ import ImageThumb from '../components/ImageThumb';
 import AssetFileUpload from '../components/AssetFileUpload';
 import ImageUploadField from '../components/ImageUploadField';
 import ImportDrawer from '../components/ImportDrawer';
+import MissingFilesDrawer from '../components/MissingFilesDrawer';
 import TagSelect from '../components/TagSelect';
 
 const { Title, Text, Paragraph } = Typography;
@@ -60,6 +62,7 @@ export default function AssetsPage() {
   const perms = usePermissions();
   const { message, modal } = App.useApp();
 
+  const canRead = perms.can('assets', 'read');
   const canCreate = perms.can('assets', 'create');
   const canUpdate = perms.can('assets', 'update');
   const canDelete = perms.can('assets', 'delete');
@@ -72,6 +75,9 @@ export default function AssetsPage() {
   const [onlyNoPreview, setOnlyNoPreview] = useState(false);
   const [editor, setEditor] = useState({ open: false, asset: null });
   const [importOpen, setImportOpen] = useState(false);
+  const [missingOpen, setMissingOpen] = useState(false);
+
+  const hasServerFilters = Object.values(filters).some((v) => v != null);
 
   const queryParams = useMemo(
     () => ({
@@ -308,6 +314,14 @@ export default function AssetsPage() {
               Import CSV
             </Button>
           )}
+          {/* The scan is a read; the delete inside the drawer gates itself. */}
+          {canRead && (
+            <Tooltip title="List the assets whose file or preview is no longer in S3, then remove those records.">
+              <Button icon={<FileSearchOutlined />} onClick={() => setMissingOpen(true)}>
+                Find missing files
+              </Button>
+            </Tooltip>
+          )}
           {canCreate && (
             <Button
               type="primary"
@@ -370,6 +384,20 @@ export default function AssetsPage() {
         onClose={() => setImportOpen(false)}
         onImported={assetsQuery.refetch}
       />
+
+      {/* The delete mutation invalidates the assets LIST tag, which this
+          screen's filtered query provides — so the table refetches on its own.
+          Nothing refetches after a scan. The list total is only meaningful as a
+          comparison when this screen is showing every asset. */}
+      {canRead && (
+        <MissingFilesDrawer
+          open={missingOpen}
+          onClose={() => setMissingOpen(false)}
+          categories={categories}
+          canDelete={canDelete}
+          listTotal={hasServerFilters ? null : assets.length}
+        />
+      )}
     </div>
   );
 }
