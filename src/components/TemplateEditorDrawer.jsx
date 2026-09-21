@@ -164,10 +164,11 @@ function DetailsForm({ uid, onCreated, onSaved }) {
         // rather than to an empty Select.
         language_id: full.language_id ?? null,
         is_premium: isTrue(full.is_premium),
+        is_popular: isTrue(full.is_popular),
       });
     } else if (!isEdit) {
       form.resetFields();
-      form.setFieldsValue({ is_premium: false, language_id: null });
+      form.setFieldsValue({ is_premium: false, is_popular: false, language_id: null });
     }
   }, [isEdit, full, form]);
 
@@ -185,6 +186,7 @@ function DetailsForm({ uid, onCreated, onSaved }) {
       category_id: values.category_id ?? null,
       template_type: values.template_type,
       is_premium: values.is_premium ? 1 : 0,
+      is_popular: values.is_popular ? 1 : 0,
     };
     // Omitted entirely when the picker isn't shown — sending null would silently
     // clear a tag the admin was never able to see.
@@ -256,9 +258,22 @@ function DetailsForm({ uid, onCreated, onSaved }) {
             />
           </Form.Item>
         )}
-        <Form.Item name="is_premium" label="Premium" valuePropName="checked">
-          <Switch />
-        </Form.Item>
+        <Space size="large" align="start">
+          <Form.Item name="is_premium" label="Premium" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          {/* An editorial badge, deliberately separate from trending_score and
+              the view/download/like counters that drive the feed's default
+              sort. Not part of the publish gate. */}
+          <Form.Item
+            name="is_popular"
+            label="Popular"
+            valuePropName="checked"
+            extra="Shown on the Popular shelf in the app. This is curated by you — it is not calculated from views or downloads."
+          >
+            <Switch />
+          </Form.Item>
+        </Space>
         <Paragraph type="secondary" style={{ marginBottom: 16 }}>
           New templates are created as <Text code>draft</Text>. Publishing happens on the Publish tab,
           once the bundle, thumbnail, sizes and tags are in place.
@@ -773,6 +788,15 @@ function PublishPanel({ uid, onSaved, onGoToTab }) {
                   <Tag color="gold">Premium</Tag>
                 ) : (
                   <Text type="secondary">Free</Text>
+                ),
+              },
+              {
+                key: 'popular',
+                label: 'Popular',
+                children: isTrue(full?.is_popular) ? (
+                  <Tag color="magenta">Popular</Tag>
+                ) : (
+                  <Text type="secondary">—</Text>
                 ),
               },
               {

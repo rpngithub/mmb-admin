@@ -25,10 +25,11 @@ const { Text, Paragraph } = Typography;
 const isTrue = (v) => v === true || v === 1 || v === '1';
 
 const TYPE_OPTIONS = [
-  { label: 'Holiday', value: 'holiday' },
-  { label: 'Observance', value: 'observance' },
-  { label: 'Awareness', value: 'awareness' },
-  { label: 'Custom', value: 'custom' },
+  { label: 'Festivals',        value: 'festival' },
+  { label: 'Public Days',      value: 'holiday' },
+  { label: 'Celebration Days', value: 'celebration' },
+  { label: 'Awareness Days',   value: 'awareness' },
+  { label: 'Custom',           value: 'custom' },
 ];
 
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, i) => {

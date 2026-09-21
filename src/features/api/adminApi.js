@@ -308,6 +308,10 @@ export const adminApi = createApi({
     }),
 
     // ---- Templates (paginated list + full CRUD via generic routes) --------
+    // List filters: status, search, category_id, industry_id, variant_id,
+    // size_id, tags, template_type, is_premium, is_popular, language_id,
+    // limit, offset. `is_premium` / `is_popular` are 1 | 0 | omitted — an empty
+    // string would be read as 0 by the server, so cleanParams must drop it.
     templatesList: builder.query({
       query: (params = {}) => ({ url: '/admin/templates', params: cleanParams(params) }),
       transformResponse: (data, meta) => ({
@@ -330,6 +334,20 @@ export const adminApi = createApi({
         { type: 'Templates', id },
         { type: 'Templates', id: 'LIST' },
       ],
+    }),
+    // The list's Popular quick-toggle: the same PATCH as templateUpdate, but
+    // silent (the page toasts its own revert message) and it does NOT invalidate
+    // the list — the page patches the one row optimistically, so flagging ten
+    // templates in a row never refetches the table ten times. Only the detail
+    // cache is invalidated so an open editor picks the flag up.
+    templateSetPopular: builder.mutation({
+      query: ({ uid, is_popular }) => ({
+        url: `/admin/templates/${uid}`,
+        method: 'PATCH',
+        body: { is_popular: is_popular ? 1 : 0 },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [{ type: 'Templates', id: uid }],
     }),
     templateRemove: builder.mutation({
       query: (id) => ({ url: `/admin/templates/${id}`, method: 'DELETE' }),
@@ -1584,6 +1602,7 @@ export const {
   useTemplateGetQuery,
   useTemplateCreateMutation,
   useTemplateUpdateMutation,
+  useTemplateSetPopularMutation,
   useTemplateRemoveMutation,
   // Frames (per-frame purchase — never plan-unlocked) + their categories
   useFramesListQuery,
