@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Table, Typography, Space, Input, Button, Select, Tag, Tooltip, App } from 'antd';
+import { Table, Typography, Space, Input, Button, Select, Switch, Tag, Tooltip, App } from 'antd';
 import {
   ReloadOutlined,
   PlusOutlined,
@@ -8,7 +8,13 @@ import {
   PictureOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { useTemplatesListQuery, useTemplateRemoveMutation, adminApi } from '../features/api/adminApi';
+import { useAppDispatch } from '../app/hooks';
+import {
+  useTemplatesListQuery,
+  useTemplateRemoveMutation,
+  useTemplateSetPopularMutation,
+  adminApi,
+} from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import { checkRowCompleteness } from '../lib/templateCompleteness';
 import ImageThumb from '../components/ImageThumb';
@@ -31,6 +37,7 @@ const EMPTY_FILTERS = {
   size_id: undefined,
   tag_ids: [],
   is_premium: undefined,
+  is_popular: undefined,
   language_id: undefined,
 };
 
@@ -68,10 +75,14 @@ export default function TemplatesPage() {
   const canUpdate = perms.can('templates', 'update');
   const canDelete = perms.can('templates', 'delete');
 
+  const dispatch = useAppDispatch();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [editor, setEditor] = useState({ open: false, uid: null });
+  // uids with a Popular PATCH in flight — the row's switch shows a spinner and
+  // ignores a second click until the first one lands.
+  const [popularBusy, setPopularBusy] = useState(() => new Set());
 
   const { data: categories } = adminApi.endpoints.templateCategoriesList.useQuery();
   const { data: businessCategories } = adminApi.endpoints.businessCategoriesList.useQuery();
@@ -108,6 +119,9 @@ export default function TemplatesPage() {
       size_id: filters.size_id,
       tags: filters.tag_ids.length ? filters.tag_ids.join(',') : undefined,
       is_premium: filters.is_premium,
+      // 1 | 0 | undefined — "All" must leave the key out entirely (cleanParams
+      // drops undefined); `is_popular=` would be read as 0 by the server.
+      is_popular: filters.is_popular,
       language_id: filters.language_id,
       limit: pageSize,
       offset: (page - 1) * pageSize,
@@ -117,6 +131,7 @@ export default function TemplatesPage() {
 
   const { data, isLoading, isFetching, refetch } = useTemplatesListQuery(queryArg);
   const [removeTemplate] = useTemplateRemoveMutation();
+  const [setPopular] = useTemplateSetPopularMutation();
 
   const rows = data?.items || [];
   const total = data?.total || 0;
@@ -124,6 +139,51 @@ export default function TemplatesPage() {
   const setFilter = (key, value) => {
     setFilters((f) => ({ ...f, [key]: value }));
     setPage(1);
+  };
+
+  /**
+   * Popular quick-toggle: flip the one row in the cached list right away, PATCH,
+   * then overwrite the row with the returned one. Nothing refetches on success —
+   * "flag ten templates before Diwali" must not reload the table ten times. On
+   * failure the flip is undone. A row un-flagged while the list is filtered to
+   * Popular stays put until the next refetch, so a mis-click can be re-flagged
+   * without hunting for it.
+   */
+  const onTogglePopular = async (record, checked) => {
+    if (popularBusy.has(record.uid)) return;
+    setPopularBusy((s) => new Set(s).add(record.uid));
+    const patch = dispatch(
+      adminApi.util.updateQueryData('templatesList', queryArg, (draft) => {
+        const row = draft.items.find((d) => d.uid === record.uid);
+        if (row) row.is_popular = checked ? 1 : 0;
+      }),
+    );
+    try {
+      const updated = await setPopular({ uid: record.uid, is_popular: checked }).unwrap();
+      if (updated && typeof updated === 'object') {
+        dispatch(
+          adminApi.util.updateQueryData('templatesList', queryArg, (draft) => {
+            const i = draft.items.findIndex((d) => d.uid === record.uid);
+            if (i !== -1) draft.items[i] = { ...draft.items[i], ...updated };
+          }),
+        );
+      }
+    } catch (err) {
+      patch.undo();
+      if (err?.status === 404) {
+        // Deleted by another admin since this page loaded — the row is stale.
+        message.warning(err?.message || 'That template no longer exists.');
+        dispatch(adminApi.util.invalidateTags([{ type: 'Templates', id: 'LIST' }]));
+      } else {
+        message.error(err?.message || 'Could not update the Popular flag.');
+      }
+    } finally {
+      setPopularBusy((s) => {
+        const next = new Set(s);
+        next.delete(record.uid);
+        return next;
+      });
+    }
   };
 
   const onDelete = (record) => {
@@ -197,6 +257,29 @@ export default function TemplatesPage() {
       key: 'is_premium',
       width: 90,
       render: (v) => (isTrue(v) ? <Tag color="gold">Premium</Tag> : <Text type="secondary">—</Text>),
+    },
+    {
+      // Editorial flag for the app's Popular shelf — hand-curated, independent
+      // of the trending/views/downloads counters. A live switch rather than a
+      // tag so a batch of templates can be flagged without opening each editor.
+      title: (
+        <Tooltip title="Shown on the Popular shelf in the app. Curated by you — not calculated from views or downloads.">
+          Popular
+        </Tooltip>
+      ),
+      dataIndex: 'is_popular',
+      key: 'is_popular',
+      width: 90,
+      render: (v, record) => (
+        <Switch
+          size="small"
+          checked={isTrue(v)}
+          disabled={!canUpdate}
+          loading={popularBusy.has(record.uid)}
+          onChange={(checked) => onTogglePopular(record, checked)}
+          aria-label={`Popular: ${record.name}`}
+        />
+      ),
     },
     {
       title: 'Ready',
@@ -383,6 +466,18 @@ export default function TemplatesPage() {
           options={[
             { label: 'Premium', value: 1 },
             { label: 'Free', value: 0 },
+          ]}
+        />
+        {/* Cleared (allowClear) = All = no param sent. */}
+        <Select
+          allowClear
+          placeholder="Popular"
+          style={{ width: 130 }}
+          value={filters.is_popular}
+          onChange={(v) => setFilter('is_popular', v)}
+          options={[
+            { label: 'Popular', value: 1 },
+            { label: 'Not popular', value: 0 },
           ]}
         />
       </Space>

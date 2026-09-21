@@ -39,9 +39,12 @@ export const ITEM_SHAPE_HINT = 'Chips use only the title. Cards use title, descr
  * without an API release.
  */
 export const SECTION_KEY_SUGGESTIONS = [
+  { value: 'hero_section', hint: 'the hero section' },
   { value: 'why_choose', hint: 'the six feature cards' },
   { value: 'content_ideas', hint: 'the chip list' },
   { value: 'business_growth', hint: 'the four numbered steps' },
+  { value: 'brand_series', hint: 'the brand series section' },
+  { value: 'start_creating', hint: 'the start creating section' },
 ];
 
 /** Lowercase letters, digits, underscores; max 50. The API does NOT lowercase it. */
