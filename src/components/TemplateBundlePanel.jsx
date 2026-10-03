@@ -170,7 +170,7 @@ function StructureGuide() {
  * bundle/confirm is called with only `thumbnail_filename` (content omitted, so
  * the saved template document is left untouched).
  */
-function ThumbnailReplace({ uid, onDone }) {
+function ThumbnailReplace({ uid, familyUid, onDone }) {
   const { message } = App.useApp();
   const [presign] = adminApi.endpoints.uploadPresign.useMutation();
   const [bundleConfirm] = adminApi.endpoints.templateBundleConfirm.useMutation();
@@ -202,7 +202,7 @@ function ThumbnailReplace({ uid, onDone }) {
         body: file,
       });
       if (!res.ok) throw new Error(`S3 upload failed (${res.status})`);
-      await bundleConfirm({ uid, thumbnail_filename: file.name }).unwrap();
+      await bundleConfirm({ uid, familyUid, thumbnail_filename: file.name }).unwrap();
       onSuccess?.({}, file);
       message.success('Thumbnail updated');
       onDone?.();
@@ -248,7 +248,15 @@ function ThumbnailReplace({ uid, onDone }) {
  * root is only the default. The ZIP filename itself is never sent to the server
  * (only its extracted files are), so the post-upload summary is session-local.
  */
-export default function TemplateBundlePanel({ uid, thumbnailKey, hasContent, onConfirmed }) {
+// `uid` is the VERSION uid (bundles belong to versions); `familyUid` is only
+// passed through so confirm/reset refetch the design as well.
+export default function TemplateBundlePanel({
+  uid,
+  familyUid,
+  thumbnailKey,
+  hasContent,
+  onConfirmed,
+}) {
   const { message, modal } = App.useApp();
   const [presign] = adminApi.endpoints.uploadPresign.useMutation();
   const [initiate] = adminApi.endpoints.multipartInitiate.useMutation();
@@ -432,6 +440,7 @@ export default function TemplateBundlePanel({ uid, thumbnailKey, hasContent, onC
       }
       await bundleConfirm({
         uid,
+        familyUid,
         content: contentStr,
         thumbnail_filename: thumbPath ? basename(thumbPath) : undefined,
       }).unwrap();
@@ -469,13 +478,30 @@ export default function TemplateBundlePanel({ uid, thumbnailKey, hasContent, onC
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await bundleReset(uid).unwrap();
+          await bundleReset({ uid, familyUid }).unwrap();
           clearSelection();
           setLastUpload(null);
           message.success('Bundle reset');
           onConfirmed?.();
-        } catch {
-          // error notification handled by baseQuery
+        } catch (err) {
+          // Silent endpoint — we own the messaging. A 409 means other versions
+          // (cloned by the migration from a multi-size template) still point at
+          // this version's files; wiping them would break those versions.
+          if (err?.status === 409) {
+            modal.warning({
+              title: 'Other versions still use these files',
+              content: (
+                <Space direction="vertical" size={8}>
+                  <Text>{err.message}</Text>
+                  <Text type="secondary">
+                    Upload a bundle for each of those versions first, then reset this one.
+                  </Text>
+                </Space>
+              ),
+            });
+          } else {
+            message.error(err?.message || 'Could not reset the bundle.');
+          }
         }
       },
     });
@@ -500,7 +526,7 @@ export default function TemplateBundlePanel({ uid, thumbnailKey, hasContent, onC
             <ImageThumb k={thumbnailKey} size={40} />
           </Space>
         )}
-        {!uploading && <ThumbnailReplace uid={uid} onDone={onConfirmed} />}
+        {!uploading && <ThumbnailReplace uid={uid} familyUid={familyUid} onDone={onConfirmed} />}
         <Button size="small" icon={<ClearOutlined />} danger onClick={onReset} disabled={uploading}>
           Reset bundle
         </Button>
@@ -553,7 +579,7 @@ export default function TemplateBundlePanel({ uid, thumbnailKey, hasContent, onC
         <Alert
           type="info"
           showIcon
-          message="This template already has a bundle on file"
+          message="This version already has a bundle on file"
           description={
             <Text type="secondary">
               The content JSON is saved

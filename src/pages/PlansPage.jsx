@@ -10,6 +10,9 @@ import {
   Drawer,
   Descriptions,
   List,
+  Switch,
+  Tooltip,
+  Alert,
   App,
 } from 'antd';
 import {
@@ -22,12 +25,23 @@ import {
 import dayjs from 'dayjs';
 import {
   adminApi,
+  useFeatureTypeMetersQuery,
   usePlanDeleteMutation,
+  usePlanUpdateMutation,
   usePlanBillingOptionsByPlanQuery,
   usePlanFeaturesByPlanQuery,
 } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import PlanEditorDrawer from './plan/PlanEditorDrawer';
+import {
+  NOT_ENFORCED_TOOLTIP,
+  featureValueHint,
+  freePlanStatusSentence,
+  isFreePlan,
+  isUnenforced,
+  meterMap,
+  meteredFeatureTypes,
+} from '../lib/meteredFeatures';
 
 const { Title, Text } = Typography;
 
@@ -43,6 +57,51 @@ function formatFeatureValue(value, dataType) {
   return String(value ?? 0);
 }
 
+function PlanTypeTag({ type }) {
+  if (type === 'free') return <Tag color="cyan">Free tier</Tag>;
+  if (type === 'access_pass') return <Tag color="purple">Access Pass</Tag>;
+  return <Tag color="blue">Subscription</Tag>;
+}
+
+/**
+ * Activate / deactivate the free plan. That switches limits on or off for every
+ * user without a subscription, so it always goes through a Popconfirm stating
+ * exactly that. A second active free plan is refused by the API (409).
+ */
+function FreePlanStatusToggle({ plan }) {
+  const { message } = App.useApp();
+  const [updatePlan, { isLoading }] = usePlanUpdateMutation();
+  const active = plan.status === 'active';
+  const next = active ? 'inactive' : 'active';
+
+  const onConfirm = async () => {
+    try {
+      await updatePlan({ id: plan.uid, body: { status: next } }).unwrap();
+      message.success(active ? 'Free plan deactivated' : 'Free plan activated');
+    } catch (e) {
+      message.error(e?.message || 'Could not change the free plan status.');
+    }
+  };
+
+  return (
+    <Popconfirm
+      title={active ? 'Deactivate the free plan?' : 'Activate the free plan?'}
+      description={freePlanStatusSentence(next)}
+      okText={active ? 'Deactivate' : 'Activate'}
+      okButtonProps={{ danger: active }}
+      onConfirm={onConfirm}
+    >
+      <Switch
+        size="small"
+        checked={active}
+        loading={isLoading}
+        checkedChildren="On"
+        unCheckedChildren="Off"
+      />
+    </Popconfirm>
+  );
+}
+
 export default function PlansPage() {
   const perms = usePermissions();
   const { message } = App.useApp();
@@ -53,13 +112,16 @@ export default function PlansPage() {
 
   const [search, setSearch] = useState('');
   const [editor, setEditor] = useState({ open: false, plan: null });
-  const [viewPlan, setViewPlan] = useState(null);
+  // By uid, so the view drawer follows the list (e.g. after a status toggle).
+  const [viewUid, setViewUid] = useState(null);
 
   const { data, isLoading, isFetching, refetch } = adminApi.endpoints.plansList.useQuery();
   const [deletePlan] = usePlanDeleteMutation();
+  const viewPlan = (data || []).find((p) => p.uid === viewUid) || null;
 
+  // The free plan is pinned first; the rest keep the server's order.
   const rows = useMemo(() => {
-    const all = data || [];
+    const all = [...(data || [])].sort((a, b) => isFreePlan(b) - isFreePlan(a));
     if (!search.trim()) return all;
     const q = search.toLowerCase();
     return all.filter((p) => p.name?.toLowerCase().includes(q));
@@ -84,8 +146,13 @@ export default function PlansPage() {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
-      width: 110,
-      render: (v) => <Tag color={v === 'active' ? 'green' : 'default'}>{v || '—'}</Tag>,
+      width: 150,
+      render: (v, record) => (
+        <Space size={6}>
+          <Tag color={v === 'active' ? 'green' : 'default'}>{v || '—'}</Tag>
+          {isFreePlan(record) && canUpdate && <FreePlanStatusToggle plan={record} />}
+        </Space>
+      ),
     },
     {
       title: 'Type',
@@ -94,11 +161,16 @@ export default function PlansPage() {
       width: 200,
       render: (v, record) => {
         const isPass = v === 'access_pass';
+        if (v === 'free') {
+          return (
+            <Tooltip title={freePlanStatusSentence(record.status)}>
+              <Tag color="cyan">Free tier</Tag>
+            </Tooltip>
+          );
+        }
         return (
           <Space size={4} wrap>
-            <Tag color={isPass ? 'purple' : 'blue'}>
-              {isPass ? 'Access Pass' : 'Subscription'}
-            </Tag>
+            <PlanTypeTag type={v} />
             {isPass
               ? (record.pass_price != null || record.pass_days != null) && (
                   <Tag color="gold">
@@ -134,7 +206,7 @@ export default function PlansPage() {
       fixed: 'right',
       render: (_v, record) => (
         <Space size="small">
-          <Button size="small" icon={<EyeOutlined />} onClick={() => setViewPlan(record)} />
+          <Button size="small" icon={<EyeOutlined />} onClick={() => setViewUid(record.uid)} />
           {canUpdate && (
             <Button
               size="small"
@@ -212,17 +284,29 @@ export default function PlansPage() {
         onSaved={refetch}
       />
 
-      <PlanViewDrawer plan={viewPlan} onClose={() => setViewPlan(null)} />
+      <PlanViewDrawer
+        plan={viewPlan}
+        canUpdate={canUpdate}
+        onClose={() => setViewUid(null)}
+        onEdit={(p) => {
+          setViewUid(null);
+          setEditor({ open: true, plan: p });
+        }}
+      />
     </div>
   );
 }
 
-function PlanViewDrawer({ plan, onClose }) {
+
+function PlanViewDrawer({ plan, canUpdate, onClose, onEdit }) {
   const { data: featureTypes } = adminApi.endpoints.featureTypesList.useQuery(undefined, {
     skip: !plan,
   });
+  const { data: meters } = useFeatureTypeMetersQuery(undefined, { skip: !plan });
   const { data: billing } = usePlanBillingOptionsByPlanQuery(plan?.id, { skip: !plan?.id });
-  const { data: features } = usePlanFeaturesByPlanQuery(plan?.id, { skip: !plan?.id });
+  const { data: features, isFetching: loadingFeatures } = usePlanFeaturesByPlanQuery(plan?.id, {
+    skip: !plan?.id,
+  });
 
   const ftById = useMemo(() => {
     const map = {};
@@ -231,29 +315,58 @@ function PlanViewDrawer({ plan, onClose }) {
     });
     return map;
   }, [featureTypes]);
+  const meterByKey = useMemo(() => meterMap(meters), [meters]);
+
+  // A plan with no row for a metered feature is UNLIMITED on it.
+  const missingMetered = useMemo(() => {
+    if (!features) return [];
+    const held = new Set(features.map((f) => f.feature_type_id));
+    return meteredFeatureTypes(featureTypes, meters).filter((f) => !held.has(f.id));
+  }, [features, featureTypes, meters]);
+
+  const isFree = isFreePlan(plan);
 
   return (
-    <Drawer title={plan ? `Plan — ${plan.name}` : 'Plan'} open={Boolean(plan)} onClose={onClose} width={560}>
+    <Drawer
+      title={plan ? `Plan — ${plan.name}` : 'Plan'}
+      open={Boolean(plan)}
+      onClose={onClose}
+      width={560}
+      extra={
+        plan && canUpdate ? (
+          <Button icon={<EditOutlined />} onClick={() => onEdit(plan)}>
+            Edit
+          </Button>
+        ) : null
+      }
+    >
       {plan && (
         <>
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="Name">{plan.name}</Descriptions.Item>
             <Descriptions.Item label="Status">
-              <Tag color={plan.status === 'active' ? 'green' : 'default'}>{plan.status}</Tag>
+              <Space size={6} wrap>
+                <Tag color={plan.status === 'active' ? 'green' : 'default'}>{plan.status}</Tag>
+                {isFree && canUpdate && <FreePlanStatusToggle plan={plan} />}
+              </Space>
+              {isFree && (
+                <div style={{ marginTop: 6 }}>
+                  <Text type={plan.status === 'active' ? 'warning' : 'secondary'}>
+                    {freePlanStatusSentence(plan.status)}
+                  </Text>
+                </div>
+              )}
             </Descriptions.Item>
             <Descriptions.Item label="Description">{plan.description || '—'}</Descriptions.Item>
             <Descriptions.Item label="Type">
-              {plan.plan_type === 'access_pass' ? (
-                <Tag color="purple">Access Pass</Tag>
-              ) : (
-                <Tag color="blue">Subscription</Tag>
-              )}
+              <PlanTypeTag type={plan.plan_type} />
             </Descriptions.Item>
-            {plan.plan_type === 'access_pass' ? (
+            {plan.plan_type === 'access_pass' && (
               <Descriptions.Item label="Pass">
                 ₹{plan.pass_price ?? '—'} / {plan.pass_days ?? '—'} days
               </Descriptions.Item>
-            ) : (
+            )}
+            {!isFree && plan.plan_type !== 'access_pass' && (
               <Descriptions.Item label="Free trial">
                 {plan.trial_days > 0 ? `${plan.trial_days} days` : 'None'}
               </Descriptions.Item>
@@ -262,36 +375,67 @@ function PlanViewDrawer({ plan, onClose }) {
             <Descriptions.Item label="Display order">{plan.display_order ?? 0}</Descriptions.Item>
           </Descriptions>
 
-          <Title level={5} style={{ marginTop: 20 }}>
-            Billing options
-          </Title>
-          <List
-            size="small"
-            bordered
-            locale={{ emptyText: 'No billing options' }}
-            dataSource={billing || []}
-            renderItem={(b) => (
-              <List.Item>
-                <Space wrap>
-                  <Tag>{b.billing_cycle}</Tag>
-                  <Text strong>
-                    {b.currency || 'INR'} {b.price}
-                  </Text>
-                  {b.discounted_price != null && (
-                    <Text type="secondary">→ {b.discounted_price}</Text>
-                  )}
-                  {b.discount_label && <Tag color="orange">{b.discount_label}</Tag>}
-                  <Tag color={b.is_active === 1 || b.is_active === true ? 'green' : 'default'}>
-                    {b.is_active === 1 || b.is_active === true ? 'active' : 'inactive'}
-                  </Tag>
-                </Space>
-              </List.Item>
-            )}
-          />
+          {!isFree && (
+            <>
+              <Title level={5} style={{ marginTop: 20 }}>
+                Billing options
+              </Title>
+              <List
+                size="small"
+                bordered
+                locale={{ emptyText: 'No billing options' }}
+                dataSource={billing || []}
+                renderItem={(b) => (
+                  <List.Item>
+                    <Space wrap>
+                      <Tag>{b.billing_cycle}</Tag>
+                      <Text strong>
+                        {b.currency || 'INR'} {b.price}
+                      </Text>
+                      {b.discounted_price != null && (
+                        <Text type="secondary">→ {b.discounted_price}</Text>
+                      )}
+                      {b.discount_label && <Tag color="orange">{b.discount_label}</Tag>}
+                      <Tag color={b.is_active === 1 || b.is_active === true ? 'green' : 'default'}>
+                        {b.is_active === 1 || b.is_active === true ? 'active' : 'inactive'}
+                      </Tag>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            </>
+          )}
 
           <Title level={5} style={{ marginTop: 20 }}>
             Features
           </Title>
+          {!loadingFeatures && missingMetered.length > 0 && (
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="These limits are not set, so this plan is unlimited on them"
+              description={
+                <div>
+                  {missingMetered.map((f) => (
+                    <div key={f.id}>
+                      <Text strong>{f.label}</Text>: not set (unlimited)
+                    </div>
+                  ))}
+                  {canUpdate && (
+                    <Button
+                      size="small"
+                      icon={<PlusOutlined />}
+                      style={{ marginTop: 8 }}
+                      onClick={() => onEdit(plan)}
+                    >
+                      Add in the editor
+                    </Button>
+                  )}
+                </div>
+              }
+            />
+          )}
           <List
             size="small"
             bordered
@@ -299,11 +443,18 @@ function PlanViewDrawer({ plan, onClose }) {
             dataSource={features || []}
             renderItem={(f) => {
               const ft = ftById[f.feature_type_id];
+              const hint = featureValueHint(ft, ft ? meterByKey.get(ft.key) : undefined);
               return (
                 <List.Item>
                   <Space wrap>
                     <Text>{f.display_label || ft?.label || `Feature #${f.feature_type_id}`}</Text>
                     <Text strong>{formatFeatureValue(f.value, ft?.data_type)}</Text>
+                    {hint && f.value !== -1 && <Text type="secondary">{hint}</Text>}
+                    {ft && isUnenforced(ft, meters) && (
+                      <Tooltip title={NOT_ENFORCED_TOOLTIP}>
+                        <Tag color="red">Not enforced</Tag>
+                      </Tooltip>
+                    )}
                     {(f.show_on_card === 1 || f.show_on_card === true) && (
                       <Tag color="blue">on card</Tag>
                     )}

@@ -17,6 +17,7 @@ const SPECIAL_TAGS = [
   'Admins',
   'ActivityLogs',
   'Templates',
+  'TemplateFamily',
   'Frames',
   'BillingOptions',
   'PlanFeatures',
@@ -54,6 +55,25 @@ const IMPORT_INVALIDATE_TAGS = {
     { type: 'tags', id: 'LIST' },
   ],
 };
+
+/**
+ * What a version change must refetch: the family (its status may have been
+ * moved back to draft by the API, and its readiness changes), its version grid
+ * and the design list (counts, languages/sizes, thumbnail, readiness).
+ */
+function versionChangeTags(familyUid) {
+  const tags = [
+    { type: 'TemplateFamily', id: 'LIST' },
+    { type: 'Templates', id: 'LIST' },
+  ];
+  if (familyUid) {
+    tags.push(
+      { type: 'TemplateFamily', id: familyUid },
+      { type: 'TemplateFamily', id: `${familyUid}:versions` },
+    );
+  }
+  return tags;
+}
 
 /**
  * Generate the five CRUD endpoints for every generic resource from its config,
@@ -195,6 +215,29 @@ export const adminApi = createApi({
       ],
     }),
 
+    // ---- Feature types: meters + silent writes ------------------------------
+    // The metered keys an integer feature may use: [{ key, label, unit,
+    // reset_periods }]. Only changes with a deploy, so it carries no tag.
+    featureTypeMeters: builder.query({
+      query: () => ({ url: '/admin/feature-types/meters' }),
+    }),
+    // Silent twins of the generated featureTypesCreate/Update: the editor shows
+    // the 400 (unmetered key / disallowed reset period — `details` is an object
+    // there, so it is ignored) and the 409 (duplicate key) as a form-level error.
+    featureTypeCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/feature-types', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'featureTypes', id: 'LIST' }],
+    }),
+    featureTypeUpdate: builder.mutation({
+      query: ({ id, body }) => ({ url: `/admin/feature-types/${id}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { id }) => [
+        { type: 'featureTypes', id },
+        { type: 'featureTypes', id: 'LIST' },
+      ],
+    }),
+
     // ---- Plans module: billing options (sub-resource of a plan) -----------
     // Lists are filtered by the plan's NUMERIC id (?plan_id=). The generic
     // factory can't pass that param, so these are dedicated.
@@ -307,77 +350,202 @@ export const adminApi = createApi({
       providesTags: [{ type: 'ActivityLogs', id: 'LIST' }],
     }),
 
-    // ---- Templates (paginated list + full CRUD via generic routes) --------
-    // List filters: status, search, category_id, industry_id, variant_id,
-    // size_id, tags, template_type, is_premium, is_popular, language_id,
-    // limit, offset. `is_premium` / `is_popular` are 1 | 0 | omitted — an empty
-    // string would be read as 0 by the server, so cleanParams must drop it.
-    templatesList: builder.query({
-      query: (params = {}) => ({ url: '/admin/templates', params: cleanParams(params) }),
+    // ---- Template families (a DESIGN) ---------------------------------------
+    // The family owns everything shared by its versions: name (unique → 409),
+    // category, industries, tags, variants, events, type, premium, popular,
+    // status and counters. List filters: status, search, category_id,
+    // industry_id, variant_id, tags (csv), template_type, is_premium,
+    // is_popular, single_version, missing_default_size, limit, offset. Flags
+    // are 1 | 0 | omitted — "All" must leave the key out (cleanParams drops
+    // undefined), since an empty value would be read as 0.
+    //
+    // Rows add version_count / active_version_count / tag_count /
+    // industry_count (MySQL numbers OR strings — coerce), languages[], sizes[],
+    // text_free, thumbnail_s3_key and readiness[{field,message}].
+    templateFamiliesList: builder.query({
+      query: (params = {}) => ({ url: '/admin/template-families', params: cleanParams(params) }),
       transformResponse: (data, meta) => ({
         items: data || [],
-        total: meta?.total ?? (data?.length || 0),
+        total: Number(meta?.total ?? (data?.length || 0)),
       }),
-      providesTags: [{ type: 'Templates', id: 'LIST' }],
-    }),
-    templateGet: builder.query({
-      query: (uid) => ({ url: `/admin/templates/${uid}` }),
-      providesTags: (_r, _e, uid) => [{ type: 'Templates', id: uid }],
-    }),
-    templateCreate: builder.mutation({
-      query: (body) => ({ url: '/admin/templates', method: 'POST', body }),
-      invalidatesTags: [{ type: 'Templates', id: 'LIST' }],
-    }),
-    templateUpdate: builder.mutation({
-      query: ({ id, body }) => ({ url: `/admin/templates/${id}`, method: 'PATCH', body }),
-      invalidatesTags: (_r, _e, { id }) => [
-        { type: 'Templates', id },
-        { type: 'Templates', id: 'LIST' },
+      providesTags: (result) => [
+        ...(result?.items || []).map((f) => ({ type: 'TemplateFamily', id: f.uid })),
+        { type: 'TemplateFamily', id: 'LIST' },
       ],
     }),
-    // The list's Popular quick-toggle: the same PATCH as templateUpdate, but
-    // silent (the page toasts its own revert message) and it does NOT invalidate
-    // the list — the page patches the one row optimistically, so flagging ten
-    // templates in a row never refetches the table ten times. Only the detail
-    // cache is invalidated so an open editor picks the flag up.
-    templateSetPopular: builder.mutation({
-      query: ({ uid, is_popular }) => ({
-        url: `/admin/templates/${uid}`,
+    templateFamilyGet: builder.query({
+      query: (uid) => ({ url: `/admin/template-families/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'TemplateFamily', id: uid }],
+    }),
+    // Silent create/update: the design screen maps 409 (duplicate name) and
+    // 400 details[] (incl. the publish gate: name / category_id / tag_ids /
+    // versions) onto the form and the readiness checklist itself.
+    templateFamilyCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/template-families', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'TemplateFamily', id: 'LIST' }],
+    }),
+    templateFamilyUpdate: builder.mutation({
+      query: ({ uid, body }) => ({
+        url: `/admin/template-families/${uid}`,
         method: 'PATCH',
-        body: { is_popular: is_popular ? 1 : 0 },
+        body,
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [{ type: 'Templates', id: uid }],
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'TemplateFamily', id: uid },
+        { type: 'TemplateFamily', id: 'LIST' },
+      ],
     }),
-    templateRemove: builder.mutation({
-      query: (id) => ({ url: `/admin/templates/${id}`, method: 'DELETE' }),
-      invalidatesTags: (_r, _e, id) => [
-        { type: 'Templates', id },
+    // The list's Premium / Popular quick-toggles: the same PATCH, but it does
+    // NOT invalidate the list — the page patches the one row optimistically, so
+    // flagging ten designs in a row never reloads the table ten times. Only the
+    // detail cache is invalidated so an open design screen picks it up.
+    templateFamilySetFlag: builder.mutation({
+      query: ({ uid, field, value }) => ({
+        url: `/admin/template-families/${uid}`,
+        method: 'PATCH',
+        body: { [field]: value ? 1 : 0 },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [{ type: 'TemplateFamily', id: uid }],
+    }),
+    // Deletes the family AND every version in it.
+    templateFamilyRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/template-families/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'TemplateFamily', id: uid },
+        { type: 'TemplateFamily', id: 'LIST' },
         { type: 'Templates', id: 'LIST' },
       ],
     }),
 
-    // ---- Template relations (tags / sizes / variants / industries) ---------
-    // GET returns the preselect shape; PUT is a per-key full replace (≥1 key).
-    templateRelations: builder.query({
-      query: (uid) => ({ url: `/admin/templates/${uid}/relations` }),
-      providesTags: (_r, _e, uid) => [{ type: 'Templates', id: `${uid}:rel` }],
+    // Family relations. GET → { Tags, Variants, Industries, BusinessCategories
+    // (deprecated duplicate) }. PUT is a per-key full replace over { tag_ids,
+    // industry_ids, variant_ids }; size_ids is a 400 now (sizes are per
+    // version). Tags + industries feed the publish gate, so the family itself
+    // (readiness) and the list refetch too.
+    templateFamilyRelations: builder.query({
+      query: (uid) => ({ url: `/admin/template-families/${uid}/relations` }),
+      providesTags: (_r, _e, uid) => [{ type: 'TemplateFamily', id: `${uid}:rel` }],
     }),
-    templateSetRelations: builder.mutation({
+    templateFamilySetRelations: builder.mutation({
       query: ({ uid, body }) => ({
-        url: `/admin/templates/${uid}/relations`,
+        url: `/admin/template-families/${uid}/relations`,
         method: 'PUT',
         body,
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [{ type: 'Templates', id: `${uid}:rel` }],
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'TemplateFamily', id: `${uid}:rel` },
+        { type: 'TemplateFamily', id: uid },
+        { type: 'TemplateFamily', id: 'LIST' },
+      ],
     }),
 
-    // ---- Template bundle ingest -------------------------------------------
+    // Merge a whole design into another. All-or-nothing: any conflict blocks
+    // it. `dryRun` returns the plan { version?, source{uid,name,outcome,
+    // versions}, target, changes[], conflicts[], applied:false } and writes
+    // nothing, so it invalidates nothing. A real merge moves every version and
+    // archives the source.
+    templateFamilyMerge: builder.mutation({
+      query: ({ uid, into_family_uid, dryRun }) => ({
+        url: `/admin/template-families/${uid}/merge`,
+        method: 'POST',
+        params: dryRun ? { dry_run: 1 } : undefined,
+        body: { into_family_uid },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, error, { uid, into_family_uid, dryRun }) =>
+        error || dryRun
+          ? []
+          : [
+              { type: 'TemplateFamily', id: uid },
+              { type: 'TemplateFamily', id: `${uid}:versions` },
+              { type: 'TemplateFamily', id: into_family_uid },
+              { type: 'TemplateFamily', id: `${into_family_uid}:versions` },
+              { type: 'TemplateFamily', id: 'LIST' },
+              { type: 'Templates', id: 'LIST' },
+            ],
+    }),
+
+    // ---- Template versions (one language-or-text-free × one size) ----------
+    // A version owns its bundle (content + thumbnail), its status and an
+    // optional name label. Rows: id, uid, name, status, language_id, size_id,
+    // Language, TemplateSize, family, has_content, has_thumbnail — content is
+    // excluded, so nothing here may be PATCHed back wholesale.
+    //
+    // ANY version change can move the family's status (a live family that
+    // loses its last active English/text-free version, in any size, drops back to
+    // draft on its own), so every version mutation takes `familyUid` and
+    // invalidates that family + the design list as well.
+    templateVersionsByFamily: builder.query({
+      query: (familyUid) => ({
+        url: '/admin/templates',
+        params: { family_uid: familyUid, limit: 100 },
+      }),
+      transformResponse: (data) => data || [],
+      providesTags: (result, _e, familyUid) => [
+        ...(result || []).map((v) => ({ type: 'Templates', id: v.uid })),
+        { type: 'TemplateFamily', id: `${familyUid}:versions` },
+        { type: 'Templates', id: 'LIST' },
+      ],
+    }),
+    // Body: { family_id (numeric), language_id (id | null = text-free), size_id }.
+    // Always born a draft. 409 = slot taken; 400 = mixing text-free/languages.
+    templateVersionCreate: builder.mutation({
+      query: ({ body }) => ({ url: '/admin/templates', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { familyUid }) => versionChangeTags(familyUid),
+    }),
+    // { status } to publish/unpublish (400 details: content / thumbnail_s3_key
+    // / size_id), or { language_id, size_id } to re-slot it (409 if taken).
+    templateVersionUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/templates/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, familyUid }) => [
+        { type: 'Templates', id: uid },
+        ...versionChangeTags(familyUid),
+      ],
+    }),
+    templateVersionRemove: builder.mutation({
+      query: ({ uid }) => ({ url: `/admin/templates/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, familyUid }) => [
+        { type: 'Templates', id: uid },
+        ...versionChangeTags(familyUid),
+      ],
+    }),
+    // Move one version into another design (the target's details win). Same
+    // dry-run plan shape as the merge. A 409 carries the conflicts in details.
+    // The version's uid never changes, so users' projects keep working.
+    templateVersionMove: builder.mutation({
+      query: ({ uid, family_uid, dryRun }) => ({
+        url: `/admin/templates/${uid}/move`,
+        method: 'POST',
+        params: dryRun ? { dry_run: 1 } : undefined,
+        body: { family_uid },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, error, { uid, family_uid, familyUid, dryRun }) =>
+        error || dryRun
+          ? []
+          : [
+              { type: 'Templates', id: uid },
+              ...versionChangeTags(familyUid),
+              ...versionChangeTags(family_uid),
+            ],
+    }),
+
+    // ---- Template bundle ingest (per VERSION) -------------------------------
     // Files are PUT to S3 first (presign target { type:'template_file',
-    // template_uid }); confirm then flips templates/<uid>/* pending→active and
-    // saves content + thumbnail_s3_key. Reset wipes templates/<uid>/ for a
-    // clean re-upload.
+    // template_uid: <version uid> }); confirm then flips templates/<uid>/*
+    // pending→active and saves content + thumbnail_s3_key. Reset wipes
+    // templates/<uid>/ for a clean re-upload — and 409s while other versions
+    // (cloned by the migration from multi-size templates) still use its files.
+    // `familyUid` is only used for invalidation: the design list shows the
+    // default version's thumbnail.
     templateBundleConfirm: builder.mutation({
       query: ({ uid, content, thumbnail_filename }) => ({
         url: `/admin/templates/${uid}/bundle/confirm`,
@@ -385,15 +553,18 @@ export const adminApi = createApi({
         body: cleanParams({ content, thumbnail_filename }),
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [
+      invalidatesTags: (_r, _e, { uid, familyUid }) => [
         { type: 'Templates', id: uid },
-        { type: 'Templates', id: 'LIST' },
+        ...versionChangeTags(familyUid),
       ],
     }),
     templateBundleReset: builder.mutation({
-      query: (uid) => ({ url: `/admin/templates/${uid}/bundle/reset`, method: 'POST' }),
+      query: ({ uid }) => ({ url: `/admin/templates/${uid}/bundle/reset`, method: 'POST' }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, uid) => [{ type: 'Templates', id: uid }],
+      invalidatesTags: (_r, _e, { uid, familyUid }) => [
+        { type: 'Templates', id: uid },
+        ...versionChangeTags(familyUid),
+      ],
     }),
 
     // ---- Frames (paged list + full CRUD) ----------------------------------
@@ -604,9 +775,13 @@ export const adminApi = createApi({
     // GET /config is the public, unauthenticated app_settings feed. Used here
     // to resolve cdn_base_url for rendering uploaded category images. Public →
     // no reauth, and silent so a failure doesn't spam a notification.
+    // Also the source of `default_template_size` (a size slug) for the design
+    // screen's "Preferred on cards" column — so it shares the appSettings LIST tag and
+    // refetches whenever a setting is edited here.
     publicConfig: builder.query({
       query: () => ({ url: '/config' }),
       extraOptions: { skipReauth: true, silent: true },
+      providesTags: [{ type: 'appSettings', id: 'LIST' }],
     }),
 
     // ---- Direct-to-S3 uploads (presign → PUT bytes → confirm) -------------
@@ -897,20 +1072,25 @@ export const adminApi = createApi({
       invalidatesTags: (_r, _e, { uid }) => [{ type: 'variants', id: `${uid}:rel` }],
     }),
 
-    // Variant ↔ templates assignment (full replace of template_ids).
-    // GET → variant incl. Templates:[{id,uid,name,thumbnail_s3_key,status,template_type}].
+    // Variant ↔ DESIGNS assignment (full replace of family_ids — numeric
+    // design ids). GET → variant incl. TemplateFamilies:[{id,uid,name,status,
+    // template_type,is_premium}]. The legacy { template_ids } body still works
+    // server-side (each resolves to its design) but is no longer sent.
     variantTemplates: builder.query({
       query: (uid) => ({ url: `/admin/variants/${uid}/templates` }),
       providesTags: (_r, _e, uid) => [{ type: 'variants', id: `${uid}:tpl` }],
     }),
     variantSetTemplates: builder.mutation({
-      query: ({ uid, template_ids }) => ({
+      query: ({ uid, family_ids }) => ({
         url: `/admin/variants/${uid}/templates`,
         method: 'PUT',
-        body: { template_ids },
+        body: { family_ids },
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { uid }) => [{ type: 'variants', id: `${uid}:tpl` }],
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'variants', id: `${uid}:tpl` },
+        { type: 'TemplateFamily', id: 'LIST' },
+      ],
     }),
 
     // ---- Brand series relations (style personalities / tags / colours) -----
@@ -956,18 +1136,19 @@ export const adminApi = createApi({
       ],
     }),
 
-    // Event ↔ templates linking (full replace of template_ids — NUMERIC ids).
-    // GET → event incl. Templates:[{id,uid,name,thumbnail_s3_key,status,template_type}].
-    // Sending [] unlinks all. Powers the calendar's "tap an event → its designs".
+    // Event ↔ DESIGNS linking (full replace of family_ids — NUMERIC design ids).
+    // GET → event incl. TemplateFamilies:[{id,uid,name,status,template_type,
+    // is_premium}]. Sending [] unlinks all. Powers the calendar's "tap an event
+    // → its designs". The legacy { template_ids } body is no longer sent.
     specialEventTemplates: builder.query({
       query: (uid) => ({ url: `/admin/special-events/${uid}/templates` }),
       providesTags: (_r, _e, uid) => [{ type: 'specialEvents', id: `${uid}:tpl` }],
     }),
     specialEventSetTemplates: builder.mutation({
-      query: ({ uid, template_ids }) => ({
+      query: ({ uid, family_ids }) => ({
         url: `/admin/special-events/${uid}/templates`,
         method: 'PUT',
-        body: { template_ids },
+        body: { family_ids },
       }),
       extraOptions: { silent: true },
       invalidatesTags: (_r, _e, { uid }) => [{ type: 'specialEvents', id: `${uid}:tpl` }],
@@ -1597,13 +1778,25 @@ export const {
   usePlanCreateMutation,
   usePlanUpdateMutation,
   usePlanDeleteMutation,
+  useFeatureTypeMetersQuery,
+  useFeatureTypeCreateMutation,
+  useFeatureTypeUpdateMutation,
   useActivityLogsListQuery,
-  useTemplatesListQuery,
-  useTemplateGetQuery,
-  useTemplateCreateMutation,
-  useTemplateUpdateMutation,
-  useTemplateSetPopularMutation,
-  useTemplateRemoveMutation,
+  // Template families (designs) + their versions
+  useTemplateFamiliesListQuery,
+  useTemplateFamilyGetQuery,
+  useTemplateFamilyCreateMutation,
+  useTemplateFamilyUpdateMutation,
+  useTemplateFamilySetFlagMutation,
+  useTemplateFamilyRemoveMutation,
+  useTemplateFamilyRelationsQuery,
+  useTemplateFamilySetRelationsMutation,
+  useTemplateFamilyMergeMutation,
+  useTemplateVersionsByFamilyQuery,
+  useTemplateVersionCreateMutation,
+  useTemplateVersionUpdateMutation,
+  useTemplateVersionRemoveMutation,
+  useTemplateVersionMoveMutation,
   // Frames (per-frame purchase — never plan-unlocked) + their categories
   useFramesListQuery,
   useFrameGetQuery,
@@ -1640,8 +1833,6 @@ export const {
   useMultipartPresignPartsMutation,
   useMultipartCompleteMutation,
   useMultipartAbortMutation,
-  useTemplateRelationsQuery,
-  useTemplateSetRelationsMutation,
   // Variants (premium, plan-scoped) + brand series relations
   useVariantUpdateMutation,
   useVariantRelationsQuery,

@@ -33,8 +33,16 @@ export default function AppLayout() {
 
   const menuItems = useMemo(() => buildMenu(perms.canRead), [perms]);
 
-  // Highlight the deepest matching key; open the group that contains it.
-  const selectedKey = location.pathname;
+  // Highlight the deepest matching key; open the group that contains it. A
+  // detail route (e.g. /templates/:uid) highlights its parent screen's key.
+  const selectedKey = useMemo(() => {
+    const path = location.pathname;
+    const keys = menuItems.flatMap((i) => (i.children ? i.children : [i])).map((i) => i.key);
+    const matches = keys.filter(
+      (k) => typeof k === 'string' && (path === k || (k !== '/' && path.startsWith(`${k}/`))),
+    );
+    return matches.sort((a, b) => b.length - a.length)[0] || path;
+  }, [location.pathname, menuItems]);
   const openKeys = useMemo(() => {
     const match = menuItems
       .filter((i) => i.children)
