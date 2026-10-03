@@ -28,7 +28,7 @@ const isActiveStatus = (s) => s === 'active';
  *     order, active.
  *   • Plans (Access) — the premium entitlement multi-select (`plan_ids`).
  *   • Industries — display/filter tags (`industry_ids`).
- *   • Templates — the templates assigned to this variant (`template_ids`).
+ *   • Designs — the template families assigned to this variant (`family_ids`).
  *
  * Plans, Industries and Templates all need a variant uid, so for a NEW variant
  * you save Details first; the drawer keeps that uid and unlocks the rest.
@@ -89,7 +89,7 @@ export default function VariantEditorDrawer({ open, variant, defaultSeriesId, on
           },
           {
             key: 'templates',
-            label: 'Templates',
+            label: 'Designs',
             disabled: isCreate,
             children: workingUid ? <TemplatesPanel uid={workingUid} /> : <NeedsUid />,
           },
@@ -375,10 +375,11 @@ function BusinessPanel({ uid }) {
   );
 }
 
-// ---- Templates — assigned templates (full replace) -------------------------
+// ---- Templates — assigned DESIGNS (full replace of family_ids) --------------
 
-// Only `active` templates may be newly assigned, but a template can be assigned
-// while active and deactivated later. Those no longer come back from
+// Assignment is per design (template family): every version of a design
+// follows it. Only `active` designs may be newly assigned, but a design can be
+// assigned while active and deactivated later. Those no longer come back from
 // `?status=active`, so the already-assigned rows are unioned into the options —
 // without them the Select would render a bare numeric id and the next save
 // (a full replace) would silently unassign them.
@@ -397,8 +398,8 @@ function TemplatesPanel({ uid }) {
     return () => clearTimeout(t);
   }, [search]);
 
-  const { data: templatesPage, isFetching: optionsLoading } =
-    adminApi.endpoints.templatesList.useQuery({
+  const { data: familiesPage, isFetching: optionsLoading } =
+    adminApi.endpoints.templateFamiliesList.useQuery({
       status: 'active',
       search: debouncedSearch || undefined,
       limit: 100,
@@ -407,10 +408,13 @@ function TemplatesPanel({ uid }) {
     adminApi.endpoints.variantSetTemplates.useMutation();
 
   const [value, setValue] = useState([]);
+  const assigned = full?.TemplateFamilies;
 
   useEffect(() => {
-    if (full) setValue((full.Templates || []).map((t) => t.id));
-  }, [full]);
+    // Seed only from the documented key — seeding [] from a response that
+    // lacks it would unassign everything on the next (full-replace) save.
+    if (Array.isArray(assigned)) setValue(assigned.map((t) => t.id));
+  }, [assigned]);
 
   const options = useMemo(() => {
     const toOption = (t) => ({
@@ -430,20 +434,25 @@ function TemplatesPanel({ uid }) {
     const out = [];
     // Active matches first, then any assigned template the filter left out so
     // selections never lose their label (or get dropped on save).
-    for (const t of [...(templatesPage?.items || []), ...(full?.Templates || [])]) {
+    for (const t of [...(familiesPage?.items || []), ...(assigned || [])]) {
       if (!t || seen.has(t.id)) continue;
       seen.add(t.id);
       out.push(toOption(t));
     }
     return out;
-  }, [templatesPage, full]);
+  }, [familiesPage, assigned]);
 
   const save = async () => {
+    if (!Array.isArray(assigned)) {
+      message.error('The current designs could not be read — reload before saving.');
+      return;
+    }
     try {
-      await setTemplates({ uid, template_ids: value }).unwrap();
-      message.success('Templates saved');
-    } catch {
-      // error notification handled by baseQuery
+      await setTemplates({ uid, family_ids: value }).unwrap();
+      message.success('Designs saved');
+    } catch (err) {
+      // Silent endpoint — surface the server's message ourselves.
+      message.error(err?.message || 'Could not save the designs.');
     }
   };
 
@@ -451,13 +460,13 @@ function TemplatesPanel({ uid }) {
     <Spin spinning={isFetching}>
       <Space direction="vertical" style={{ width: '100%' }} size={14}>
         <Paragraph type="secondary" style={{ margin: 0 }}>
-          The templates assigned to this variant (full replace). These become available to
-          subscribers on the variant’s entitled plans. Only <Text strong>active</Text> templates can
-          be picked — an already-assigned template that was since deactivated stays listed with its
-          status so you can remove it deliberately.
+          The designs assigned to this variant (full replace) — every language and size of a design
+          comes with it. These become available to subscribers on the variant’s entitled plans.
+          Only <Text strong>active</Text> designs can be picked — an already-assigned design that
+          was since deactivated stays listed with its status so you can remove it deliberately.
         </Paragraph>
         <div>
-          <Text type="secondary">Assigned templates</Text>
+          <Text type="secondary">Assigned designs</Text>
           <Select
             mode="multiple"
             allowClear
@@ -469,13 +478,13 @@ function TemplatesPanel({ uid }) {
             filterOption={false}
             onSearch={setSearch}
             loading={optionsLoading}
-            notFoundContent={optionsLoading ? <Spin size="small" /> : 'No active templates found'}
-            placeholder="Select templates to assign"
+            notFoundContent={optionsLoading ? <Spin size="small" /> : 'No active designs found'}
+            placeholder="Select designs to assign"
             maxTagCount="responsive"
           />
         </div>
         <Button type="primary" loading={saving} onClick={save}>
-          Save templates
+          Save designs
         </Button>
       </Space>
     </Spin>

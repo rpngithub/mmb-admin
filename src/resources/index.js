@@ -431,6 +431,10 @@ export const RESOURCES = [
   // Plan Billing Options + Plan Features have no standalone screen — they are
   // managed inline from the Plans page (see PlansPage / PlanEditorDrawer).
 
+  // Feature types have a dedicated screen (src/pages/FeatureTypesPage.jsx →
+  // FeatureTypeEditorModal, wired in router.jsx): an integer feature's key must
+  // be a metered key from GET /admin/feature-types/meters. This config only
+  // supplies nav/permission and the generated featureTypes* endpoints.
   resource({
     key: 'featureTypes',
     name: 'Feature Types',
@@ -439,44 +443,6 @@ export const RESOURCES = [
     permission: 'features',
     idField: 'id',
     group: 'Billing',
-    columns: [
-      { dataIndex: 'key', title: 'Key' },
-      { dataIndex: 'label', title: 'Label' },
-      { dataIndex: 'data_type', title: 'Data type' },
-      { dataIndex: 'reset_period', title: 'Reset period' },
-      // Turning this on is what makes a feature appear in the Top-up Packs and
-      // quota-grant dropdowns — no deploy needed.
-      { dataIndex: 'is_topupable', title: 'Top-uppable', type: 'boolean', width: 120 },
-    ],
-    fields: [
-      { name: 'key', label: 'Key', type: 'text', required: true, help: 'Unique, e.g. exports_per_month' },
-      { name: 'label', label: 'Label', type: 'text', required: true },
-      { name: 'description', label: 'Description', type: 'textarea' },
-      {
-        name: 'reset_period',
-        label: 'Reset period',
-        type: 'select',
-        initialValue: 'never',
-        options: ['monthly', 'annual', 'never'].map((v) => ({ label: v, value: v })),
-      },
-      {
-        name: 'data_type',
-        label: 'Data type',
-        type: 'select',
-        initialValue: 'integer',
-        options: ['integer', 'boolean'].map((v) => ({ label: v, value: v })),
-      },
-      // Gates the feature dropdown on Top-up Packs and on a support quota grant:
-      // the server refuses a pack for a feature that isn't flagged, so an
-      // unflagged one can never be published.
-      {
-        name: 'is_topupable',
-        label: 'Can be topped up',
-        type: 'switch',
-        initialValue: false,
-        help: 'Allows top-up packs to be sold for this feature. The feature still has to be metered in the app for the purchased quota to be spendable.',
-      },
-    ],
   }),
 
   // Coupons have a dedicated screen (src/pages/CouponsPage.jsx →

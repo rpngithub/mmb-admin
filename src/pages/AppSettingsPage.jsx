@@ -36,6 +36,10 @@ const TYPE_OPTIONS = ['string', 'integer', 'boolean', 'json'].map((v) => ({
 // break the app/website, so the delete confirm warns more loudly.
 const CRITICAL_KEYS = new Set(['min_supported_version', 'cdn_base_url', 'maintenance_mode']);
 
+// Holds a template-size SLUG; edited with a size picker instead of free text.
+// It's only the size catalogue cards prefer — never a publish requirement.
+const DEFAULT_SIZE_KEY = 'default_template_size';
+
 // Stable-ish ordering for the grouped sections; unknown groups fall to the end
 // alphabetically, and settings with no group land in "Ungrouped".
 const GROUP_ORDER = ['general', 'billing', 'media'];
@@ -84,10 +88,22 @@ function toApiValue(type, value) {
 
 // ---- list cell renderers ----------------------------------------------------
 
-function ValueCell({ record }) {
+function ValueCell({ record, sizes }) {
   const { type, value } = record;
   if (value === null || value === undefined || value === '') {
-    return <Text type="secondary">—</Text>;
+    return <Text type="secondary">{record.key === DEFAULT_SIZE_KEY ? 'No preference' : '—'}</Text>;
+  }
+  if (record.key === DEFAULT_SIZE_KEY) {
+    const size = (sizes || []).find((s) => s.slug === value);
+    return size ? (
+      <span>
+        {size.name} <Text type="secondary">({value})</Text>
+      </span>
+    ) : (
+      <Tooltip title="No template size has this slug, so cards fall back to each design's lowest size. Publishing isn't affected.">
+        <Tag color="warning">{value}</Tag>
+      </Tooltip>
+    );
   }
   if (type === 'boolean') {
     const on = isTrue(value);
@@ -115,6 +131,7 @@ export default function AppSettingsPage() {
     adminApi.endpoints.appSettingsList.useQuery();
   const [updateTrigger] = adminApi.endpoints.appSettingsUpdate.useMutation();
   const [removeTrigger] = adminApi.endpoints.appSettingsRemove.useMutation();
+  const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
 
   const rows = useMemo(() => {
     const all = data || [];
@@ -181,7 +198,7 @@ export default function AppSettingsPage() {
     {
       title: 'Value',
       key: 'value',
-      render: (_v, record) => <ValueCell record={record} />,
+      render: (_v, record) => <ValueCell record={record} sizes={sizes} />,
     },
     {
       title: 'Description',
@@ -369,6 +386,43 @@ function ValueField({ type }) {
   }
 }
 
+/**
+ * `default_template_size` picker: stores the size SLUG. Cleared = no
+ * preference (cards use each design's lowest size). A stored slug that no
+ * longer matches a size stays selectable so it can be seen and replaced.
+ */
+function DefaultSizeField() {
+  const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
+  const form = Form.useFormInstance();
+  const current = Form.useWatch('value', form);
+  const options = (sizes || [])
+    .filter((s) => s.slug)
+    .map((s) => ({
+      label: `${s.name}${s.width && s.height ? ` (${s.width}×${s.height})` : ''}${
+        s.is_active === 0 || s.is_active === false ? ' — inactive' : ''
+      }`,
+      value: s.slug,
+    }));
+  if (current && !options.some((o) => o.value === current)) {
+    options.unshift({ label: `${current} — no matching size`, value: current });
+  }
+  return (
+    <Form.Item
+      name="value"
+      label="Default template size"
+      extra="The size catalogue cards prefer when a design has several sizes. Not required for publishing."
+    >
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder="No preference"
+        options={options}
+      />
+    </Form.Item>
+  );
+}
+
 function SettingEditor({ open, record, onClose, onSaved }) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
@@ -376,6 +430,9 @@ function SettingEditor({ open, record, onClose, onSaved }) {
   const isEdit = Boolean(record);
 
   const type = Form.useWatch('type', form) || 'string';
+  const watchedKey = Form.useWatch('key', form);
+  const isDefaultSize = (isEdit ? record?.key : watchedKey?.trim()) === DEFAULT_SIZE_KEY;
+  const isPublic = Form.useWatch('is_public', form);
 
   const [createTrigger] = adminApi.endpoints.appSettingsCreate.useMutation();
   const [updateTrigger] = adminApi.endpoints.appSettingsUpdate.useMutation();
@@ -485,7 +542,15 @@ function SettingEditor({ open, record, onClose, onSaved }) {
           <Select options={TYPE_OPTIONS} />
         </Form.Item>
 
-        <ValueField type={type} />
+        {isDefaultSize ? <DefaultSizeField /> : <ValueField type={type} />}
+        {isDefaultSize && !isPublic && (
+          <Alert
+            style={{ marginBottom: 16 }}
+            type="info"
+            showIcon
+            message="The design screen reads this from GET /config (to mark the “Preferred on cards” column), which only serves public settings. Turn Public on below."
+          />
+        )}
 
         <Form.Item name="description" label="Description">
           <Input.TextArea rows={2} placeholder="What this setting controls" />

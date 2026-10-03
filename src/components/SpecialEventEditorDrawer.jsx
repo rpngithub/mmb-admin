@@ -46,8 +46,8 @@ const DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => {
  * Tabbed editor for a special event:
  *   • Details — name, description, type, recurrence-driven date, thumbnail,
  *     banner, active.
- *   • Linked designs — the templates surfaced when a user taps this event
- *     (full replace of template_ids).
+ *   • Linked designs — the template families surfaced when a user taps this
+ *     event (full replace of family_ids).
  *
  * Linked designs needs an event uid, so for a NEW event you save Details first;
  * the drawer keeps that uid and unlocks the tab.
@@ -312,39 +312,65 @@ function DetailsForm({ uid, onCreated, onSaved }) {
   );
 }
 
-// ---- Linked designs — assigned templates (full replace) --------------------
+// ---- Linked designs — assigned template families (full replace) -------------
 
 function TemplatesPanel({ uid }) {
   const { message } = App.useApp();
   const { data: full, isFetching } = adminApi.endpoints.specialEventTemplates.useQuery(uid, {
     skip: !uid,
   });
-  const { data: templatesPage } = adminApi.endpoints.templatesList.useQuery({ limit: 1000 });
+
+  // Server-side search: the list is paginated, so client filtering would only
+  // ever see the first page.
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  const { data: familiesPage, isFetching: optionsLoading } =
+    adminApi.endpoints.templateFamiliesList.useQuery({
+      search: debouncedSearch || undefined,
+      limit: 100,
+    });
   const [setTemplates, { isLoading: saving }] =
     adminApi.endpoints.specialEventSetTemplates.useMutation();
 
   const [value, setValue] = useState([]);
+  const linked = full?.TemplateFamilies;
 
   useEffect(() => {
-    if (full) setValue((full.Templates || []).map((t) => t.id));
-  }, [full]);
+    // Seed only from the documented key — seeding [] from a response without it
+    // would unlink everything on the next full-replace save.
+    if (Array.isArray(linked)) setValue(linked.map((t) => t.id));
+  }, [linked]);
 
-  const options = useMemo(
-    () =>
-      (templatesPage?.items || []).map((t) => ({
-        label: t.template_type ? `${t.name} · ${t.template_type}` : t.name,
-        value: t.id,
-      })),
-    [templatesPage],
-  );
+  // Search results first, then any linked design they left out, so a selection
+  // never renders as a bare id (or gets dropped on save).
+  const options = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const t of [...(familiesPage?.items || []), ...(linked || [])]) {
+      if (!t || seen.has(t.id)) continue;
+      seen.add(t.id);
+      const base = t.template_type ? `${t.name} · ${t.template_type}` : t.name;
+      out.push({ label: t.status && t.status !== 'active' ? `${base} (${t.status})` : base, value: t.id });
+    }
+    return out;
+  }, [familiesPage, linked]);
 
   const save = async () => {
+    if (!Array.isArray(linked)) {
+      message.error('The linked designs could not be read — reload before saving.');
+      return;
+    }
     try {
-      // Full replace of template_ids (numeric ids). An empty array unlinks all.
-      await setTemplates({ uid, template_ids: value }).unwrap();
+      // Full replace of family_ids (numeric design ids). [] unlinks all.
+      await setTemplates({ uid, family_ids: value }).unwrap();
       message.success('Linked designs saved');
-    } catch {
-      // error notification handled by baseQuery
+    } catch (err) {
+      // Silent endpoint — surface the server's message ourselves.
+      message.error(err?.message || 'Could not save the linked designs.');
     }
   };
 
@@ -364,7 +390,11 @@ function TemplatesPanel({ uid }) {
             value={value}
             onChange={setValue}
             options={options}
-            optionFilterProp="label"
+            showSearch
+            filterOption={false}
+            onSearch={setSearch}
+            loading={optionsLoading}
+            notFoundContent={optionsLoading ? <Spin size="small" /> : 'No designs found'}
             placeholder="Select designs to link"
             maxTagCount="responsive"
           />

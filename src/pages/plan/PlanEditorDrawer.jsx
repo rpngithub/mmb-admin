@@ -14,11 +14,13 @@ import {
   Col,
   Spin,
   Alert,
+  Tooltip,
   App,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined } from '@ant-design/icons';
 import {
   adminApi,
+  useFeatureTypeMetersQuery,
   usePlanBillingOptionsByPlanQuery,
   usePlanFeaturesByPlanQuery,
   usePlanCreateMutation,
@@ -32,19 +34,27 @@ import {
 } from '../../features/api/adminApi';
 import { usePermissions } from '../../features/auth/usePermissions';
 import FeatureValueInput from '../../components/FeatureValueInput';
-import FeatureTypeModal from './FeatureTypeModal';
+import FeatureTypeEditorModal from '../../components/FeatureTypeEditorModal';
+import {
+  RESET_MEANING,
+  isUnenforced,
+  meterMap,
+  meteredFeatureTypes,
+  isFreePlan,
+  freePlanStatusSentence,
+  otherActiveFreePlan,
+} from '../../lib/meteredFeatures';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 const CYCLE_OPTS = [
   { label: 'Monthly', value: 'monthly' },
   { label: 'Annual', value: 'annual' },
 ];
 
-const PLAN_TYPE_OPTS = [
-  { label: 'Subscription', value: 'subscription' },
-  { label: 'Access Pass', value: 'access_pass' },
-];
+const FREE_TYPE_LABEL = 'Free tier — users without a subscription';
+
+const isTrue = (v) => v === 1 || v === true;
 
 // ---- mappers: server row <-> form row --------------------------------------
 
@@ -99,14 +109,37 @@ function toFeaturePayload(f) {
 
 // ---- one feature row (needs its own hook to watch the selected type) -------
 
-function FeatureRow({ field, remove, form, featureTypes, usedIds, canFeatureCreate, onCreateNew }) {
+function FeatureRow({
+  field,
+  remove,
+  form,
+  featureTypes,
+  meters,
+  meterByKey,
+  usedIds,
+  canFeatureCreate,
+  onCreateNew,
+}) {
   const ftId = Form.useWatch(['features', field.name, 'feature_type_id'], form);
   const ft = (featureTypes || []).find((f) => f.id === ftId);
   const dataType = ft?.data_type || 'integer';
+  const meter = ft ? meterByKey.get(ft.key) : undefined;
+  const unit = meter?.unit && meter.unit !== 'count' ? meter.unit : undefined;
 
+  // Retired integer features (key not metered) are not offered — only metered
+  // integers plus every boolean. A row that already holds one keeps it so it
+  // still renders. Unfiltered while /meters is unknown.
+  const offerable = (f) => !meters || f.data_type === 'boolean' || meterByKey.has(f.key);
   const options = (featureTypes || [])
-    .filter((f) => f.id === ftId || !usedIds.includes(f.id))
+    .filter((f) => f.id === ftId || (!usedIds.includes(f.id) && offerable(f)))
     .map((f) => ({ label: f.label, value: f.id }));
+
+  let valueHint = null;
+  if (ft && isUnenforced(ft, meters)) {
+    valueHint = <Text type="danger">Not enforced — nothing counts this feature</Text>;
+  } else if (dataType === 'integer' && RESET_MEANING[ft?.reset_period]) {
+    valueHint = <Text type="secondary">{RESET_MEANING[ft.reset_period]}</Text>;
+  }
 
   return (
     <Row gutter={8} align="top" style={{ marginBottom: 8 }}>
@@ -142,13 +175,14 @@ function FeatureRow({ field, remove, form, featureTypes, usedIds, canFeatureCrea
           />
         </Form.Item>
       </Col>
-      <Col flex="220px">
+      <Col flex="250px">
         <Form.Item
           name={[field.name, 'value']}
           rules={[{ required: true, message: 'Value required' }]}
+          extra={valueHint}
           style={{ marginBottom: 0 }}
         >
-          <FeatureValueInput dataType={dataType} />
+          <FeatureValueInput dataType={dataType} unit={unit} />
         </Form.Item>
       </Col>
       <Col flex="150px">
@@ -177,7 +211,7 @@ function FeatureRow({ field, remove, form, featureTypes, usedIds, canFeatureCrea
 
 export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
   const isEdit = Boolean(plan);
-  const { message, notification } = App.useApp();
+  const { message, notification, modal } = App.useApp();
   const perms = usePermissions();
   const canFeatureCreate = perms.can('features', 'create');
   const [form] = Form.useForm();
@@ -185,6 +219,10 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
   const [ftModal, setFtModal] = useState({ open: false, rowName: null });
 
   const { data: featureTypes } = adminApi.endpoints.featureTypesList.useQuery();
+  const { data: meters } = useFeatureTypeMetersQuery(undefined, { skip: !open });
+  const meterByKey = useMemo(() => meterMap(meters), [meters]);
+  // Shares PlansPage's cache — used to find another active free plan.
+  const { data: allPlans } = adminApi.endpoints.plansList.useQuery(undefined, { skip: !open });
   const { data: billingRows, isFetching: loadingBilling } = usePlanBillingOptionsByPlanQuery(
     plan?.id,
     { skip: !open || !plan?.id },
@@ -244,24 +282,83 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
     .filter((v) => v !== undefined && v !== null);
 
   const planType = Form.useWatch('plan_type', form) || 'subscription';
+  const status = Form.useWatch('status', form) || 'active';
   const isAccessPass = planType === 'access_pass';
+  const isFree = planType === 'free';
+
+  // Only one free plan may be active: offer `free` only when no other one is.
+  // A plan that is already free keeps the option (activating it would 409, and
+  // that message is shown on save).
+  const otherFree = otherActiveFreePlan(allPlans, plan?.uid);
+  const freeBlocked = Boolean(otherFree) && !isFreePlan(plan);
+  const planTypeOpts = [
+    { label: 'Subscription', value: 'subscription' },
+    { label: 'Access Pass', value: 'access_pass' },
+    {
+      value: 'free',
+      disabled: freeBlocked,
+      label: freeBlocked ? (
+        <Tooltip
+          title={`"${otherFree.name}" is already the active free plan — only one can be active.`}
+        >
+          <span>{FREE_TYPE_LABEL}</span>
+        </Tooltip>
+      ) : (
+        FREE_TYPE_LABEL
+      ),
+    },
+  ];
+
+  // Converting a plan to free is refused while it has active billing options.
+  const activeBillingCount = origBilling.filter((b) => isTrue(b.is_active)).length;
+
+  // Integer features the plan has no row for → unlimited on them.
+  const missingMetered = meteredFeatureTypes(featureTypes, meters).filter(
+    (f) => !usedFeatureIds.includes(f.id),
+  );
 
   const buildPlanBody = (v) => {
-    const isPass = v.plan_type === 'access_pass';
+    const type = v.plan_type || 'subscription';
+    const isPass = type === 'access_pass';
     const numOrNull = (x) => (x != null && x !== '' ? Number(x) : null);
-    return {
+    const body = {
       name: v.name,
       description: v.description || undefined,
-      plan_type: v.plan_type || 'subscription',
+      plan_type: type,
       status: v.status || 'active',
       is_popular: v.is_popular ? 1 : 0,
       display_order: v.display_order ?? 0,
-      // Only the fields relevant to the chosen plan_type are sent; the others
-      // are nulled so stale values from a type switch never reach the server.
-      trial_days: isPass ? null : numOrNull(v.trial_days),
-      pass_price: isPass ? numOrNull(v.pass_price) : null,
-      pass_days: isPass ? numOrNull(v.pass_days) : null,
     };
+    // The free plan takes no trial/pass fields — the API 400s on any, so none
+    // are sent.
+    if (type === 'free') return body;
+    // Only the fields relevant to the chosen plan_type are sent; the others
+    // are nulled so stale values from a type switch never reach the server.
+    body.trial_days = isPass ? null : numOrNull(v.trial_days);
+    body.pass_price = isPass ? numOrNull(v.pass_price) : null;
+    body.pass_days = isPass ? numOrNull(v.pass_days) : null;
+    return body;
+  };
+
+  /**
+   * Activating / deactivating the free plan (including converting an active
+   * one away from free) switches limits on or off for every user without a
+   * subscription, so it is confirmed first. Resolves false on cancel.
+   */
+  const confirmEnforcementChange = (v) => {
+    const wasEnforced = isEdit && isFreePlan(plan) && plan.status === 'active';
+    const willEnforce = v.plan_type === 'free' && v.status === 'active';
+    if (wasEnforced === willEnforce) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      modal.confirm({
+        title: willEnforce ? 'Turn on free-tier limits?' : 'Turn off free-tier limits?',
+        content: freePlanStatusSentence(willEnforce ? 'active' : 'inactive'),
+        okText: willEnforce ? 'Activate' : 'Deactivate',
+        okButtonProps: { danger: !willEnforce },
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
   };
 
   const reportFailures = (failures, successMsg) => {
@@ -296,7 +393,8 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
     const planId = created.id;
     const failures = [];
 
-    for (const b of v.billing || []) {
+    // The free plan never has billing options (the API 400s on them).
+    for (const b of v.plan_type === 'free' ? [] : v.billing || []) {
       try {
         await createBilling({ plan_id: planId, ...toBillingPayload(b) }).unwrap();
       } catch (e) {
@@ -320,16 +418,26 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
   const saveEdit = async (v) => {
     const failures = [];
 
+    const typeChanged = (v.plan_type || 'subscription') !== (plan.plan_type || 'subscription');
     try {
       await updatePlan({ id: plan.uid, body: buildPlanBody(v) }).unwrap();
     } catch (e) {
+      // A refused type change (e.g. to free while billing options are active —
+      // "deactivate them first") would leave the rows below written against
+      // the wrong type, so stop and keep the drawer open.
+      if (typeChanged) {
+        message.error(e?.message || 'Could not change the plan type.');
+        return;
+      }
       failures.push(`Plan details: ${e?.message || 'failed'}`);
     }
 
-    // Billing diff
-    const formBilling = v.billing || [];
+    // Billing diff — skipped for the free plan, whose billing section is
+    // hidden: nothing there is offered, so nothing is created or removed.
+    const isFreeSave = v.plan_type === 'free';
+    const formBilling = isFreeSave ? [] : v.billing || [];
     const keepBilling = new Set(formBilling.filter((b) => b.id).map((b) => b.id));
-    for (const o of origBilling) {
+    for (const o of isFreeSave ? [] : origBilling) {
       if (!keepBilling.has(o.id)) {
         try {
           await deleteBilling(o.id).unwrap();
@@ -383,6 +491,7 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
     } catch {
       return;
     }
+    if (!(await confirmEnforcementChange(v))) return;
     setSaving(true);
     try {
       if (isEdit) await saveEdit(v);
@@ -392,7 +501,7 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
     }
   };
 
-  const handleFtCreated = (created) => {
+  const handleFtSaved = (created) => {
     if (ftModal.rowName != null && created?.id != null) {
       form.setFieldValue(['features', ftModal.rowName, 'feature_type_id'], created.id);
     }
@@ -438,7 +547,17 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item name="status" label="Status">
+              <Form.Item
+                name="status"
+                label="Status"
+                extra={
+                  isFree ? (
+                    <Text type={status === 'active' ? 'warning' : 'secondary'}>
+                      {freePlanStatusSentence(status)}
+                    </Text>
+                  ) : undefined
+                }
+              >
                 <Select
                   options={[
                     { label: 'Active', value: 'active' },
@@ -455,13 +574,16 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
             <Col xs={24} md={8}>
               <Form.Item name="plan_type" label="Plan type">
                 <Select
-                  options={PLAN_TYPE_OPTS}
+                  options={planTypeOpts}
+                  popupMatchSelectWidth={false}
                   onChange={(val) =>
                     // Clear the fields that don't apply to the new type so stale
                     // values aren't submitted.
-                    val === 'access_pass'
-                      ? form.setFieldsValue({ trial_days: null })
-                      : form.setFieldsValue({ pass_price: null, pass_days: null })
+                    val === 'free'
+                      ? form.setFieldsValue({ trial_days: null, pass_price: null, pass_days: null })
+                      : val === 'access_pass'
+                        ? form.setFieldsValue({ trial_days: null })
+                        : form.setFieldsValue({ pass_price: null, pass_days: null })
                   }
                 />
               </Form.Item>
@@ -478,8 +600,32 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
             </Col>
           </Row>
 
-          {/* Type-specific pricing fields. */}
-          {isAccessPass ? (
+          {/* Type-specific pricing fields. The free plan sells nothing: no
+              trial, no pass, no billing options. */}
+          {isFree ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Free tier — the limits a user without a subscription is held to."
+              description={
+                <>
+                  Nothing is sold on it and it never appears on the pricing grid. Only one free
+                  plan can be active.
+                  {isEdit && !isFreePlan(plan) && activeBillingCount > 0 && (
+                    <div style={{ marginTop: 8 }}>
+                      <Text type="danger">
+                        This plan still has {activeBillingCount} active billing option
+                        {activeBillingCount === 1 ? '' : 's'}, so it can&apos;t become the free
+                        plan — deactivate them first (switch the type back, turn them off, save),
+                        then convert it.
+                      </Text>
+                    </div>
+                  )}
+                </>
+              }
+            />
+          ) : isAccessPass ? (
             <Row gutter={16}>
               <Col xs={12} md={8}>
                 <Form.Item
@@ -529,8 +675,8 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
             </Row>
           )}
 
-          {/* 2. Billing options */}
-          <Divider orientation="left">
+          {/* 2. Billing options — hidden (but kept mounted) for the free plan. */}
+          <Divider orientation="left" style={{ display: isFree ? 'none' : undefined }}>
             <Title level={5} style={{ margin: 0 }}>
               Billing options
             </Title>
@@ -544,7 +690,7 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
               description="Pricing is set by the pass price above. Any existing billing options are kept but not editable here."
             />
           )}
-          <div style={{ display: isAccessPass ? 'none' : 'block' }}>
+          <div style={{ display: isAccessPass || isFree ? 'none' : 'block' }}>
           <Form.List name="billing">
             {(fields, { add, remove }) => (
               <>
@@ -629,6 +775,44 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
           <Form.List name="features">
             {(fields, { add, remove }) => (
               <>
+                {/* A plan with no row for a metered feature is UNLIMITED on it. */}
+                {!loading && missingMetered.length > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 12 }}
+                    message="These limits are not set, so this plan is unlimited on them"
+                    description={
+                      <div>
+                        {missingMetered.map((f) => (
+                          <div
+                            key={f.id}
+                            style={{ display: 'flex', alignItems: 'center', gap: 8 }}
+                          >
+                            <span>
+                              <Text strong>{f.label}</Text>: not set (unlimited)
+                            </span>
+                            <Button
+                              size="small"
+                              type="link"
+                              icon={<PlusOutlined />}
+                              onClick={() =>
+                                add({
+                                  feature_type_id: f.id,
+                                  value: 0,
+                                  show_on_card: true,
+                                  display_order: 0,
+                                })
+                              }
+                            >
+                              Add
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    }
+                  />
+                )}
                 {fields.map((field) => (
                   <FeatureRow
                     key={field.key}
@@ -636,6 +820,8 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
                     remove={remove}
                     form={form}
                     featureTypes={featureTypes}
+                    meters={meters}
+                    meterByKey={meterByKey}
                     usedIds={usedFeatureIds}
                     canFeatureCreate={canFeatureCreate}
                     onCreateNew={(rowName) => setFtModal({ open: true, rowName })}
@@ -655,10 +841,10 @@ export default function PlanEditorDrawer({ open, plan, onClose, onSaved }) {
         </Form>
       </Spin>
 
-      <FeatureTypeModal
+      <FeatureTypeEditorModal
         open={ftModal.open}
         onClose={() => setFtModal({ open: false, rowName: null })}
-        onCreated={handleFtCreated}
+        onSaved={handleFtSaved}
       />
     </Drawer>
   );

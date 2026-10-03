@@ -5,11 +5,12 @@ import { InputNumber, Switch, Checkbox, Space } from 'antd';
  * `dataType`. Designed to live inside a Form.Item (value/onChange).
  *
  *   boolean → Switch (on = 1, off = 0)
- *   integer → number input + "Unlimited" toggle (sets value = -1)
+ *   integer → number input + "Unlimited" toggle (sets value = -1); `unit`
+ *             (e.g. "MB") is shown after the number when given
  *
  * Value semantics: -1 = unlimited, 0 = none/off, >0 = count, 1 = boolean-on.
  */
-export default function FeatureValueInput({ value, onChange, dataType = 'integer' }) {
+export default function FeatureValueInput({ value, onChange, dataType = 'integer', unit }) {
   if (dataType === 'boolean') {
     return (
       <Switch
@@ -26,8 +27,9 @@ export default function FeatureValueInput({ value, onChange, dataType = 'integer
     <Space>
       <InputNumber
         min={0}
-        style={{ width: 120 }}
+        style={{ width: unit ? 140 : 120 }}
         placeholder="Count"
+        addonAfter={unit}
         value={unlimited ? null : value}
         disabled={unlimited}
         onChange={(v) => onChange?.(v ?? 0)}

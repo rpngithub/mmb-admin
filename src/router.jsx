@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import UsersPage from './pages/UsersPage';
 import AdminsPage from './pages/AdminsPage';
 import TemplatesPage from './pages/TemplatesPage';
+import TemplateFamilyPage from './pages/TemplateFamilyPage';
 import FramesPage from './pages/FramesPage';
 import FrameCategoriesPage from './pages/FrameCategoriesPage';
 import QuotaPacksPage from './pages/QuotaPacksPage';
@@ -15,6 +16,7 @@ import BulkImportPage from './pages/BulkImportPage';
 import ActivityLogsPage from './pages/ActivityLogsPage';
 import RolesPage from './pages/RolesPage';
 import PlansPage from './pages/PlansPage';
+import FeatureTypesPage from './pages/FeatureTypesPage';
 import AppSettingsPage from './pages/AppSettingsPage';
 import TemplateCategoriesPage from './pages/TemplateCategoriesPage';
 import BusinessCategoriesPage from './pages/BusinessCategoriesPage';
@@ -75,6 +77,15 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="templates">
               <TemplatesPage />
+            </RequirePermission>
+          }
+        />
+        {/* One design (template family) and its version grid; `new` creates one. */}
+        <Route
+          path="templates/:uid"
+          element={
+            <RequirePermission domain="templates">
+              <TemplateFamilyPage />
             </RequirePermission>
           }
         />
@@ -189,6 +200,8 @@ export default function AppRouter() {
                   <RolesPage />
                 ) : r.key === 'plans' ? (
                   <PlansPage />
+                ) : r.key === 'featureTypes' ? (
+                  <FeatureTypesPage />
                 ) : r.key === 'appSettings' ? (
                   <AppSettingsPage />
                 ) : r.key === 'templateCategories' ? (

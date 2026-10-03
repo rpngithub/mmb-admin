@@ -1,54 +1,64 @@
 import { useMemo, useState } from 'react';
-import { Table, Typography, Space, Input, Button, Select, Switch, Tag, Tooltip, App } from 'antd';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Table, Typography, Space, Input, Button, Select, Switch, Tag, Tooltip, Checkbox, App } from 'antd';
 import {
   ReloadOutlined,
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
   PictureOutlined,
+  InfoCircleOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useAppDispatch } from '../app/hooks';
-import {
-  useTemplatesListQuery,
-  useTemplateRemoveMutation,
-  useTemplateSetPopularMutation,
-  adminApi,
-} from '../features/api/adminApi';
+import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
-import { checkRowCompleteness } from '../lib/templateCompleteness';
+import {
+  STATUS_COLORS,
+  STATUSES,
+  TEMPLATE_TYPES,
+  TEXT_FREE_LABEL,
+  isTrue,
+  num,
+  languageLabel,
+  sizeLabel,
+} from '../lib/templateFamilies';
 import ImageThumb from '../components/ImageThumb';
-import TemplateEditorDrawer, { ANY_LANGUAGE_LABEL } from '../components/TemplateEditorDrawer';
+import { useConfirmFamilyDelete } from '../components/templateFamilyDelete';
 
 const { Title, Text } = Typography;
 
-const STATUS_COLORS = { active: 'green', inactive: 'default', draft: 'gold' };
-const TEMPLATE_TYPES = ['image', 'video', 'animated'];
-const STATUSES = ['active', 'inactive', 'draft'];
-const isTrue = (v) => v === true || v === 1 || v === '1';
+const DEFAULT_PAGE_SIZE = 30;
 
-const EMPTY_FILTERS = {
-  search: '',
-  status: undefined,
-  template_type: undefined,
-  category_id: undefined,
-  business_category_id: undefined,
-  variant_id: undefined,
-  size_id: undefined,
-  tag_ids: [],
-  is_premium: undefined,
-  is_popular: undefined,
-  language_id: undefined,
-};
+// Filters live in the URL (e.g. ?missing_default_size=1), so Back from a design
+// returns to the same view.
+// Every key is omitted when its filter is "All".
+const NUMERIC_KEYS = ['category_id', 'industry_id', 'variant_id', 'is_premium', 'is_popular'];
+const TEXT_KEYS = ['search', 'status', 'template_type'];
+const TOGGLE_KEYS = ['single_version', 'missing_default_size'];
 
-/**
- * A template with no `thumbnail_s3_key` reads as an empty cell, which is easy to
- * miss — show it as a gap that needs filling instead. The key is only set when a
- * bundle is confirmed with a thumbnail chosen on the Bundle tab.
- */
+function readFilters(sp) {
+  const f = {};
+  TEXT_KEYS.forEach((k) => {
+    f[k] = sp.get(k) || undefined;
+  });
+  NUMERIC_KEYS.forEach((k) => {
+    const v = sp.get(k);
+    f[k] = v === null || v === '' || Number.isNaN(Number(v)) ? undefined : Number(v);
+  });
+  TOGGLE_KEYS.forEach((k) => {
+    f[k] = sp.get(k) === '1';
+  });
+  f.tags = (sp.get('tags') || '')
+    .split(',')
+    .map(Number)
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return f;
+}
+
 function MissingThumb() {
   return (
-    <Tooltip title="No thumbnail — pick one on the template's Bundle tab">
+    <Tooltip title="No thumbnail — upload a bundle for an English (or text-free) version">
       <div
         style={{
           width: 40,
@@ -67,142 +77,186 @@ function MissingThumb() {
   );
 }
 
+/** "3 languages · 4 sizes" (or "Text-free · 4 sizes"), names in the tooltip. */
+function CoverageCell({ row }) {
+  const languages = Array.isArray(row.languages) ? row.languages : [];
+  const sizes = Array.isArray(row.sizes) ? row.sizes : [];
+  const versions = num(row.version_count);
+  const live = num(row.active_version_count);
+  const langText = isTrue(row.text_free)
+    ? TEXT_FREE_LABEL
+    : `${languages.length} language${languages.length === 1 ? '' : 's'}`;
+  const sizeText = `${sizes.length} size${sizes.length === 1 ? '' : 's'}`;
+  const tip = (
+    <div>
+      {languages.length > 0 && <div>Languages: {languages.map(languageLabel).join(', ')}</div>}
+      {sizes.length > 0 && <div>Sizes: {sizes.map(sizeLabel).join(', ')}</div>}
+      <div>
+        {live} of {versions} version{versions === 1 ? '' : 's'} active
+      </div>
+    </div>
+  );
+  return (
+    <Tooltip title={tip}>
+      <Space direction="vertical" size={0}>
+        <Text>
+          {versions === 0 ? 'No versions' : `${langText} · ${sizeText}`}
+        </Text>
+        {versions > 0 && (
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            {live}/{versions} active
+          </Text>
+        )}
+      </Space>
+    </Tooltip>
+  );
+}
+
+function ReadinessCell({ readiness }) {
+  const list = Array.isArray(readiness) ? readiness : [];
+  if (!list.length) return <Tag color="green">Ready</Tag>;
+  return (
+    <Tooltip
+      title={
+        <ul style={{ margin: 0, paddingLeft: 16 }}>
+          {list.map((r, i) => (
+            <li key={`${r.field}-${i}`}>{r.message}</li>
+          ))}
+        </ul>
+      }
+    >
+      <Tag color="warning">{list.length} missing</Tag>
+    </Tooltip>
+  );
+}
+
 export default function TemplatesPage() {
   const perms = usePermissions();
-  const { message, modal } = App.useApp();
+  const { message } = App.useApp();
+  const navigate = useNavigate();
+  const dispatch = useAppDispatch();
+  const confirmDelete = useConfirmFamilyDelete();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const canCreate = perms.can('templates', 'create');
   const canUpdate = perms.can('templates', 'update');
   const canDelete = perms.can('templates', 'delete');
 
-  const dispatch = useAppDispatch();
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [editor, setEditor] = useState({ open: false, uid: null });
-  // uids with a Popular PATCH in flight — the row's switch shows a spinner and
-  // ignores a second click until the first one lands.
-  const [popularBusy, setPopularBusy] = useState(() => new Set());
+  const filters = useMemo(() => readFilters(searchParams), [searchParams]);
+  const page = Math.max(1, Number(searchParams.get('page')) || 1);
+  const pageSize = Math.max(1, Number(searchParams.get('limit')) || DEFAULT_PAGE_SIZE);
+
+  // `${uid}:${field}` keys with a flag PATCH in flight.
+  const [flagBusy, setFlagBusy] = useState(() => new Set());
 
   const { data: categories } = adminApi.endpoints.templateCategoriesList.useQuery();
-  const { data: businessCategories } = adminApi.endpoints.businessCategoriesList.useQuery();
+  const { data: industries } = adminApi.endpoints.businessCategoriesList.useQuery();
   const { data: variants } = adminApi.endpoints.variantsList.useQuery();
-  const { data: sizes } = adminApi.endpoints.templateSizesList.useQuery();
   const { data: tags } = adminApi.endpoints.tagsList.useQuery();
-  // Unfiltered here (unlike the editor's picker): a template may still carry a
-  // language that was since switched off, and finding those to retag is exactly
-  // what this filter is for. Skipped when the admin can't read languages, so the
-  // page doesn't fire a 403 at them.
-  const canReadLanguages = perms.canRead('languages');
-  const { data: languages } = adminApi.endpoints.languagesList.useQuery(undefined, {
-    skip: !canReadLanguages,
-  });
-
-  const languageById = useMemo(() => {
-    const m = new Map();
-    (languages || []).forEach((l) => m.set(l.id, l));
-    return m;
-  }, [languages]);
 
   const queryArg = useMemo(
     () => ({
-      search: filters.search || undefined,
+      search: filters.search,
       status: filters.status,
       template_type: filters.template_type,
       category_id: filters.category_id,
-      // Sent as industry_id (renamed from the deprecated business_category_id).
-      industry_id: filters.business_category_id,
-      // Still sent as the deprecated `theme_id` alias: the brief renames the
-      // variants CRUD but doesn't confirm whether this list filter followed, and
-      // the alias is still accepted. Switch to `variant_id` once confirmed.
-      theme_id: filters.variant_id,
-      size_id: filters.size_id,
-      tags: filters.tag_ids.length ? filters.tag_ids.join(',') : undefined,
+      industry_id: filters.industry_id,
+      variant_id: filters.variant_id,
+      tags: filters.tags.length ? filters.tags.join(',') : undefined,
       is_premium: filters.is_premium,
-      // 1 | 0 | undefined — "All" must leave the key out entirely (cleanParams
-      // drops undefined); `is_popular=` would be read as 0 by the server.
       is_popular: filters.is_popular,
-      language_id: filters.language_id,
+      single_version: filters.single_version ? 1 : undefined,
+      missing_default_size: filters.missing_default_size ? 1 : undefined,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     }),
     [filters, page, pageSize],
   );
 
-  const { data, isLoading, isFetching, refetch } = useTemplatesListQuery(queryArg);
-  const [removeTemplate] = useTemplateRemoveMutation();
-  const [setPopular] = useTemplateSetPopularMutation();
+  const { data, isLoading, isFetching, refetch } =
+    adminApi.endpoints.templateFamiliesList.useQuery(queryArg);
+  const [setFlag] = adminApi.endpoints.templateFamilySetFlag.useMutation();
 
   const rows = data?.items || [];
   const total = data?.total || 0;
 
-  const setFilter = (key, value) => {
-    setFilters((f) => ({ ...f, [key]: value }));
-    setPage(1);
+  const updateParams = (mutate) => {
+    const next = new URLSearchParams(searchParams);
+    mutate(next);
+    setSearchParams(next, { replace: true });
   };
 
+  const setFilter = (key, value) =>
+    updateParams((sp) => {
+      const empty =
+        value === undefined ||
+        value === null ||
+        value === '' ||
+        value === false ||
+        (Array.isArray(value) && value.length === 0);
+      if (empty) sp.delete(key);
+      else if (Array.isArray(value)) sp.set(key, value.join(','));
+      else if (value === true) sp.set(key, '1');
+      else sp.set(key, String(value));
+      sp.delete('page');
+    });
+
   /**
-   * Popular quick-toggle: flip the one row in the cached list right away, PATCH,
-   * then overwrite the row with the returned one. Nothing refetches on success —
-   * "flag ten templates before Diwali" must not reload the table ten times. On
-   * failure the flip is undone. A row un-flagged while the list is filtered to
-   * Popular stays put until the next refetch, so a mis-click can be re-flagged
-   * without hunting for it.
+   * Premium / Popular quick-toggle: flip the row in the cached page right away,
+   * PATCH, then merge the returned family in. Nothing refetches on success; on
+   * failure the flip is undone.
    */
-  const onTogglePopular = async (record, checked) => {
-    if (popularBusy.has(record.uid)) return;
-    setPopularBusy((s) => new Set(s).add(record.uid));
+  const onToggleFlag = async (record, field, checked) => {
+    const key = `${record.uid}:${field}`;
+    if (flagBusy.has(key)) return;
+    setFlagBusy((s) => new Set(s).add(key));
     const patch = dispatch(
-      adminApi.util.updateQueryData('templatesList', queryArg, (draft) => {
+      adminApi.util.updateQueryData('templateFamiliesList', queryArg, (draft) => {
         const row = draft.items.find((d) => d.uid === record.uid);
-        if (row) row.is_popular = checked ? 1 : 0;
+        if (row) row[field] = checked ? 1 : 0;
       }),
     );
     try {
-      const updated = await setPopular({ uid: record.uid, is_popular: checked }).unwrap();
+      const updated = await setFlag({ uid: record.uid, field, value: checked }).unwrap();
       if (updated && typeof updated === 'object') {
         dispatch(
-          adminApi.util.updateQueryData('templatesList', queryArg, (draft) => {
+          adminApi.util.updateQueryData('templateFamiliesList', queryArg, (draft) => {
             const i = draft.items.findIndex((d) => d.uid === record.uid);
-            if (i !== -1) draft.items[i] = { ...draft.items[i], ...updated };
+            // Only the flag itself: a PATCH response may not carry the list's
+            // computed columns (languages, sizes, readiness…).
+            if (i !== -1 && field in updated) draft.items[i][field] = updated[field];
           }),
         );
       }
     } catch (err) {
       patch.undo();
       if (err?.status === 404) {
-        // Deleted by another admin since this page loaded — the row is stale.
-        message.warning(err?.message || 'That template no longer exists.');
-        dispatch(adminApi.util.invalidateTags([{ type: 'Templates', id: 'LIST' }]));
+        message.warning(err?.message || 'That design no longer exists.');
+        dispatch(adminApi.util.invalidateTags([{ type: 'TemplateFamily', id: 'LIST' }]));
       } else {
-        message.error(err?.message || 'Could not update the Popular flag.');
+        message.error(err?.message || 'Could not update the flag.');
       }
     } finally {
-      setPopularBusy((s) => {
+      setFlagBusy((s) => {
         const next = new Set(s);
-        next.delete(record.uid);
+        next.delete(key);
         return next;
       });
     }
   };
 
-  const onDelete = (record) => {
-    modal.confirm({
-      title: `Delete "${record.name}"?`,
-      content:
-        'Hard delete. User projects keep working (template_id is nulled); all M2M links are removed.',
-      okText: 'Delete',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await removeTemplate(record.uid).unwrap();
-          message.success('Template deleted');
-        } catch {
-          // error notification handled by baseQuery
-        }
-      },
-    });
-  };
+  const flagSwitch = (field, label) => (v, record) => (
+    <Switch
+      size="small"
+      checked={isTrue(v)}
+      disabled={!canUpdate}
+      loading={flagBusy.has(`${record.uid}:${field}`)}
+      onChange={(checked) => onToggleFlag(record, field, checked)}
+      aria-label={`${label}: ${record.name}`}
+    />
+  );
+
+  const open = (uid) => navigate(`/templates/${uid}`);
 
   const columns = [
     {
@@ -212,37 +266,28 @@ export default function TemplatesPage() {
       width: 70,
       render: (k) => <ImageThumb k={k} size={40} placeholder={<MissingThumb />} />,
     },
-    { title: 'Name', dataIndex: 'name', key: 'name', render: (v) => <Text strong>{v}</Text> },
     {
-      title: 'Type',
-      dataIndex: 'template_type',
-      key: 'template_type',
-      width: 100,
-      render: (v) => (v ? <Tag>{v}</Tag> : <Text type="secondary">—</Text>),
+      title: 'Name',
+      dataIndex: 'name',
+      key: 'name',
+      render: (v, r) => (
+        <Space direction="vertical" size={0}>
+          <Button type="link" style={{ padding: 0, height: 'auto' }} onClick={() => open(r.uid)}>
+            <Text strong>{v}</Text>
+          </Button>
+          {r.template_type && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {r.template_type}
+            </Text>
+          )}
+        </Space>
+      ),
     },
     {
-      // NULL is language-NEUTRAL (shown to everyone), not "untagged" — but every
-      // template started out NULL, so the neutral tag is also how you spot the
-      // ones nobody has been through yet.
-      title: 'Language',
-      key: 'language',
-      width: 150,
-      render: (_v, r) => {
-        if (r.language_id == null) {
-          return (
-            <Tooltip title="Language-neutral: no text, or symbols only. Shown to every user whatever they picked.">
-              <Tag>{ANY_LANGUAGE_LABEL}</Tag>
-            </Tooltip>
-          );
-        }
-        const lang = r.Language || languageById.get(r.language_id);
-        if (!lang) return <Tag color="blue">#{r.language_id}</Tag>;
-        return (
-          <Tooltip title={lang.name}>
-            <Tag color="blue">{lang.native_name || lang.name}</Tag>
-          </Tooltip>
-        );
-      },
+      title: 'Versions',
+      key: 'coverage',
+      width: 190,
+      render: (_v, r) => <CoverageCell row={r} />,
     },
     {
       title: 'Status',
@@ -256,12 +301,11 @@ export default function TemplatesPage() {
       dataIndex: 'is_premium',
       key: 'is_premium',
       width: 90,
-      render: (v) => (isTrue(v) ? <Tag color="gold">Premium</Tag> : <Text type="secondary">—</Text>),
+      render: flagSwitch('is_premium', 'Premium'),
     },
     {
       // Editorial flag for the app's Popular shelf — hand-curated, independent
-      // of the trending/views/downloads counters. A live switch rather than a
-      // tag so a batch of templates can be flagged without opening each editor.
+      // of the trending/views/downloads counters.
       title: (
         <Tooltip title="Shown on the Popular shelf in the app. Curated by you — not calculated from views or downloads.">
           Popular
@@ -270,30 +314,18 @@ export default function TemplatesPage() {
       dataIndex: 'is_popular',
       key: 'is_popular',
       width: 90,
-      render: (v, record) => (
-        <Switch
-          size="small"
-          checked={isTrue(v)}
-          disabled={!canUpdate}
-          loading={popularBusy.has(record.uid)}
-          onChange={(checked) => onTogglePopular(record, checked)}
-          aria-label={`Popular: ${record.name}`}
-        />
-      ),
+      render: flagSwitch('is_popular', 'Popular'),
     },
     {
-      title: 'Ready',
-      key: 'ready',
+      title: (
+        <Tooltip title="What still blocks publishing this design. A live design stays live when this changes — it just can't be republished until it's fixed.">
+          Ready
+        </Tooltip>
+      ),
+      dataIndex: 'readiness',
+      key: 'readiness',
       width: 110,
-      render: (_v, record) => {
-        const { complete, missing } = checkRowCompleteness(record);
-        if (complete) return <Tag color="green">Ready</Tag>;
-        return (
-          <Tooltip title={`Missing: ${missing.join(', ')}`}>
-            <Tag color="warning">Incomplete ({missing.length})</Tag>
-          </Tooltip>
-        );
-      },
+      render: (v) => <ReadinessCell readiness={v} />,
     },
     {
       title: 'Updated',
@@ -309,20 +341,13 @@ export default function TemplatesPage() {
       fixed: 'right',
       render: (_v, record) => (
         <Space size="small">
-          {canUpdate && (
-            <Button
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => setEditor({ open: true, uid: record.uid })}
-              title="Edit"
-            />
-          )}
+          <Button size="small" icon={<EditOutlined />} onClick={() => open(record.uid)} title="Open" />
           {canDelete && (
             <Button
               size="small"
               danger
               icon={<DeleteOutlined />}
-              onClick={() => onDelete(record)}
+              onClick={() => confirmDelete(record)}
               title="Delete"
             />
           )}
@@ -331,8 +356,11 @@ export default function TemplatesPage() {
     },
   ];
 
-  const byId = (list, label = 'name') =>
-    (list || []).map((x) => ({ label: x[label], value: x.id }));
+  const byId = (list) => (list || []).map((x) => ({ label: x.name, value: x.id }));
+  const flagOptions = (on, off) => [
+    { label: on, value: 1 },
+    { label: off, value: 0 },
+  ];
 
   return (
     <div>
@@ -346,34 +374,34 @@ export default function TemplatesPage() {
           gap: 12,
         }}
       >
-        <Title level={4} style={{ margin: 0 }}>
-          Templates
-        </Title>
+        <Space direction="vertical" size={0}>
+          <Title level={4} style={{ margin: 0 }}>
+            Designs
+          </Title>
+          <Text type="secondary">
+            Each design groups its versions — one per language (or text-free) and size.
+          </Text>
+        </Space>
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={refetch} loading={isFetching}>
             Reload
           </Button>
           {canCreate && (
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setEditor({ open: true, uid: null })}
-            >
-              New Template
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/templates/new')}>
+              New design
             </Button>
           )}
         </Space>
       </div>
 
-      <Space wrap style={{ marginBottom: 16 }}>
+      <Space wrap style={{ marginBottom: 12 }}>
         <Input.Search
+          key={filters.search || ''}
           allowClear
+          defaultValue={filters.search}
           placeholder="Search name"
           style={{ width: 200 }}
-          onSearch={(v) => setFilter('search', v)}
-          onChange={(e) => {
-            if (!e.target.value) setFilter('search', '');
-          }}
+          onSearch={(v) => setFilter('search', v.trim())}
         />
         <Select
           allowClear
@@ -407,9 +435,9 @@ export default function TemplatesPage() {
           optionFilterProp="label"
           placeholder="Industry"
           style={{ width: 170 }}
-          value={filters.business_category_id}
-          onChange={(v) => setFilter('business_category_id', v)}
-          options={byId(businessCategories)}
+          value={filters.industry_id}
+          onChange={(v) => setFilter('industry_id', v)}
+          options={byId(industries)}
         />
         <Select
           allowClear
@@ -423,63 +451,50 @@ export default function TemplatesPage() {
         />
         <Select
           allowClear
-          showSearch
-          optionFilterProp="label"
-          placeholder="Size"
-          style={{ width: 150 }}
-          value={filters.size_id}
-          onChange={(v) => setFilter('size_id', v)}
-          options={byId(sizes)}
-        />
-        <Select
-          allowClear
           mode="multiple"
           maxTagCount="responsive"
           optionFilterProp="label"
           placeholder="Tags (any)"
           style={{ minWidth: 180 }}
-          value={filters.tag_ids}
-          onChange={(v) => setFilter('tag_ids', v)}
+          value={filters.tags}
+          onChange={(v) => setFilter('tags', v)}
           options={byId(tags)}
         />
-        {canReadLanguages && (
-          <Select
-            allowClear
-            showSearch
-            optionFilterProp="label"
-            placeholder="Language"
-            style={{ width: 170 }}
-            value={filters.language_id}
-            onChange={(v) => setFilter('language_id', v)}
-            options={(languages || []).map((l) => ({
-              label: `${l.native_name} (${l.name})`,
-              value: l.id,
-            }))}
-          />
-        )}
         <Select
           allowClear
           placeholder="Premium"
           style={{ width: 120 }}
           value={filters.is_premium}
           onChange={(v) => setFilter('is_premium', v)}
-          options={[
-            { label: 'Premium', value: 1 },
-            { label: 'Free', value: 0 },
-          ]}
+          options={flagOptions('Premium', 'Free')}
         />
-        {/* Cleared (allowClear) = All = no param sent. */}
         <Select
           allowClear
           placeholder="Popular"
           style={{ width: 130 }}
           value={filters.is_popular}
           onChange={(v) => setFilter('is_popular', v)}
-          options={[
-            { label: 'Popular', value: 1 },
-            { label: 'Not popular', value: 0 },
-          ]}
+          options={flagOptions('Popular', 'Not popular')}
         />
+      </Space>
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Tooltip title="Designs with exactly one version — after the migration, most duplicates to merge are here.">
+          <Checkbox
+            checked={filters.single_version}
+            onChange={(e) => setFilter('single_version', e.target.checked)}
+          >
+            Single-version only
+          </Checkbox>
+        </Tooltip>
+        {/* Informational only: the default size is not a publish requirement. */}
+        <Tooltip title="Designs with no English (or text-free) version in the default size (App Settings). These designs are still live; cards show their other sizes.">
+          <Checkbox
+            checked={filters.missing_default_size}
+            onChange={(e) => setFilter('missing_default_size', e.target.checked)}
+          >
+            No default-size version <InfoCircleOutlined style={{ color: '#8c8c8c' }} />
+          </Checkbox>
+        </Tooltip>
       </Space>
 
       <Table
@@ -494,19 +509,16 @@ export default function TemplatesPage() {
           pageSize,
           total,
           showSizeChanger: true,
-          showTotal: (t) => `${t} total`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          pageSizeOptions: [10, 20, 30, 50, 100],
+          showTotal: (t) => `${t} designs`,
+          onChange: (p, ps) =>
+            updateParams((sp) => {
+              if (p > 1) sp.set('page', String(p));
+              else sp.delete('page');
+              if (ps !== DEFAULT_PAGE_SIZE) sp.set('limit', String(ps));
+              else sp.delete('limit');
+            }),
         }}
-      />
-
-      <TemplateEditorDrawer
-        open={editor.open}
-        uid={editor.uid}
-        onClose={() => setEditor({ open: false, uid: null })}
-        onSaved={refetch}
       />
     </div>
   );
