@@ -1316,6 +1316,24 @@ export const adminApi = createApi({
       invalidatesTags: [{ type: 'fonts', id: 'LIST' }],
     }),
 
+    // Name previews (migration 049): the API cuts each font down to the letters of
+    // its own `family` → fonts.preview_s3_key. Built automatically on file save /
+    // rename; this is the one-off backfill. No query → only fonts without a
+    // preview; `force` → every font. Covers library AND users' fonts. Slow (one
+    // font at a time, each reads a whole file) — fetchBaseQuery has no default
+    // timeout here, so a long run is not cut off client-side. Response:
+    // { processed, with_preview, fonts:[{uid,family,is_library,preview_s3_key,reason}] }.
+    // Silent — the page shows its own result / error.
+    fontsRebuildPreviews: builder.mutation({
+      query: ({ force } = {}) => ({
+        url: '/admin/fonts/previews/rebuild',
+        method: 'POST',
+        params: force ? { force: 1 } : undefined,
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'fonts', id: 'LIST' }],
+    }),
+
     // Both sub-resources are FULL REPLACES — send every file / language the family
     // should end up with, not just the new ones. Files are (weight, style, format,
     // s3_key) rows; s3_key comes from the presign→PUT→confirm flow with target
@@ -1878,6 +1896,7 @@ export const {
   useFontCreateMutation,
   useFontUpdateMutation,
   useFontsReorderMutation,
+  useFontsRebuildPreviewsMutation,
   useFontSetFilesMutation,
   useFontSetLanguagesMutation,
   // Industry suggestions (moderation queue)
