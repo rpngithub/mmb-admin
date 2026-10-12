@@ -9,16 +9,21 @@ import {
   WarningFilled,
   ExclamationCircleFilled,
   CheckCircleFilled,
+  FontColorsOutlined,
+  SyncOutlined,
 } from '@ant-design/icons';
 import { useAppDispatch } from '../app/hooks';
 import {
   adminApi,
   useFontUpdateMutation,
   useFontsReorderMutation,
+  useFontsRebuildPreviewsMutation,
 } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import { summarizeFontFiles } from '../lib/fontFiles';
 import FontEditorDrawer from '../components/FontEditorDrawer';
+import FontNamePreview from '../components/FontNamePreview';
+import FontPreviewRebuildResult from '../components/FontPreviewRebuildResult';
 
 const { Title, Text } = Typography;
 
@@ -73,6 +78,9 @@ export default function FontsPage() {
   const [updateFont] = useFontUpdateMutation();
   const [removeFont] = adminApi.endpoints.fontsRemove.useMutation();
   const [reorder] = useFontsReorderMutation();
+  const [rebuildPreviews, { isLoading: rebuilding }] = useFontsRebuildPreviewsMutation();
+  const [rebuild, setRebuild] = useState({ result: null, force: false });
+  const [rebuildingForce, setRebuildingForce] = useState(false);
 
   const ordered = useMemo(() => [...(data || [])].sort(orderCmp), [data]);
 
@@ -137,6 +145,32 @@ export default function FontsPage() {
     }
   };
 
+  // Backfill / repair of name previews. Slow — one font at a time server-side —
+  // so both buttons lock while it runs. The mutation invalidates the list, which
+  // brings the new preview_s3_keys in.
+  const runRebuild = async (force) => {
+    if (rebuilding) return;
+    setRebuildingForce(force);
+    try {
+      const result = await rebuildPreviews({ force }).unwrap();
+      setRebuild({ result, force });
+    } catch (err) {
+      message.error(err?.message || 'Could not build the font previews.');
+    }
+  };
+
+  const confirmRebuildAll = () => {
+    modal.confirm({
+      title: 'Rebuild every font preview?',
+      content:
+        'Re-cuts the preview of every font — library and users’ own — from its files. It can take a minute or more on a large library. Use Build missing previews for the routine case.',
+      okText: 'Rebuild all',
+      onOk: () => {
+        runRebuild(true);
+      },
+    });
+  };
+
   const onDelete = (record) => {
     modal.confirm({
       title: `Delete "${record.family}"?`,
@@ -172,7 +206,7 @@ export default function FontsPage() {
       key: 'family',
       render: (v, r) => (
         <Space size={6}>
-          <Text strong>{v}</Text>
+          <FontNamePreview font={r} />
           {isTrue(r.is_premium) && <Tag color="gold">Premium</Tag>}
         </Space>
       ),
@@ -305,6 +339,28 @@ export default function FontsPage() {
           <Button icon={<ReloadOutlined />} onClick={refetch} loading={isFetching || reordering}>
             Reload
           </Button>
+          {canUpdate && (
+            <>
+              <Tooltip title="Cut a name preview for every font that has none yet (library and users’ fonts).">
+                <Button
+                  icon={<FontColorsOutlined />}
+                  onClick={() => runRebuild(false)}
+                  loading={rebuilding && !rebuildingForce}
+                  disabled={rebuilding && rebuildingForce}
+                >
+                  Build missing previews
+                </Button>
+              </Tooltip>
+              <Button
+                icon={<SyncOutlined />}
+                onClick={confirmRebuildAll}
+                loading={rebuilding && rebuildingForce}
+                disabled={rebuilding && !rebuildingForce}
+              >
+                Rebuild all
+              </Button>
+            </>
+          )}
           {canCreate && (
             <Button
               type="primary"
@@ -332,6 +388,23 @@ export default function FontsPage() {
             {filtered ? ' Clear the search and filter to reorder.' : ''}
           </>
         }
+      />
+
+      {rebuilding && (
+        <Alert
+          type="info"
+          showIcon
+          icon={<SyncOutlined spin />}
+          style={{ marginBottom: 16 }}
+          message={rebuildingForce ? 'Rebuilding every font preview…' : 'Building missing font previews…'}
+          description="Fonts are processed one at a time — this can take a minute or more. Keep this page open."
+        />
+      )}
+
+      <FontPreviewRebuildResult
+        result={rebuild.result}
+        force={rebuild.force}
+        onClose={() => setRebuild({ result: null, force: false })}
       />
 
       <Table
