@@ -43,7 +43,19 @@ import { useConfirmFamilyDelete } from '../components/templateFamilyDelete';
 const { Title, Text, Paragraph } = Typography;
 
 // Family fields the details form owns; a 400 on any of these lands inline.
-const FORM_FIELDS = ['name', 'category_id', 'template_type', 'is_premium', 'is_popular'];
+const FORM_FIELDS = [
+  'name',
+  'category_id',
+  'template_type',
+  'is_premium',
+  'is_popular',
+  'search_keywords',
+];
+
+// Mirrors the server limits so most mistakes never round-trip; the server
+// (which also trims + de-dupes case-insensitively) still has the final say.
+const MAX_KEYWORDS = 30;
+const MAX_KEYWORD_LENGTH = 50;
 
 /**
  * One DESIGN (template family): shared details + relations on top, the
@@ -213,10 +225,11 @@ function FamilyDetailsForm({ family, disabled, onCreated }) {
         template_type: family.template_type ?? undefined,
         is_premium: isTrue(family.is_premium),
         is_popular: isTrue(family.is_popular),
+        search_keywords: Array.isArray(family.search_keywords) ? family.search_keywords : [],
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ is_premium: false, is_popular: false });
+      form.setFieldsValue({ is_premium: false, is_popular: false, search_keywords: [] });
     }
   }, [family, form]);
 
@@ -236,6 +249,8 @@ function FamilyDetailsForm({ family, disabled, onCreated }) {
       template_type: values.template_type,
       is_premium: values.is_premium ? 1 : 0,
       is_popular: values.is_popular ? 1 : 0,
+      // Whole list every time: PATCH replaces it, so [] clears it.
+      search_keywords: values.search_keywords || [],
     };
     setSaving(true);
     try {
@@ -306,6 +321,30 @@ function FamilyDetailsForm({ family, disabled, onCreated }) {
           </Form.Item>
         </Col>
       </Row>
+      <Form.Item
+        name="search_keywords"
+        label="Search keywords"
+        extra="Extra words users can search to find this design (e.g. grand opening, bonanza, common misspellings). Not shown to users; tags and category are already searchable."
+        rules={[
+          {
+            validator: (_, value) =>
+              (value || []).some((k) => k.length > MAX_KEYWORD_LENGTH)
+                ? Promise.reject(
+                    new Error(`Each keyword can be at most ${MAX_KEYWORD_LENGTH} characters.`),
+                  )
+                : Promise.resolve(),
+          },
+        ]}
+      >
+        <Select
+          mode="tags"
+          tokenSeparators={[',']}
+          maxCount={MAX_KEYWORDS}
+          suffixIcon={null}
+          notFoundContent={null}
+          placeholder="Type a keyword and press Enter or comma"
+        />
+      </Form.Item>
       <Space size="large" align="start" wrap>
         <Form.Item name="is_premium" label="Premium" valuePropName="checked">
           <Switch />

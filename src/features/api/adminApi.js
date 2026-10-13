@@ -379,7 +379,9 @@ export const adminApi = createApi({
     }),
     // Silent create/update: the design screen maps 409 (duplicate name) and
     // 400 details[] (incl. the publish gate: name / category_id / tag_ids /
-    // versions) onto the form and the readiness checklist itself.
+    // versions, and search_keywords limits) onto the form and the readiness
+    // checklist itself. Body may carry search_keywords: string[] — PATCH
+    // replaces the whole list, [] clears it. Detail GET returns it ([] if none).
     templateFamilyCreate: builder.mutation({
       query: (body) => ({ url: '/admin/template-families', method: 'POST', body }),
       extraOptions: { silent: true },
