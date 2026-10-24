@@ -21,6 +21,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { adminApi, useRoleDeleteMutation } from '../features/api/adminApi';
+import { useAppDispatch } from '../app/hooks';
 import { usePermissions } from '../features/auth/usePermissions';
 import { normalizePermissions } from '../features/auth/permissions';
 import PermissionEditor from '../components/PermissionEditor';
@@ -30,6 +31,7 @@ const { Title, Text } = Typography;
 export default function RolesPage() {
   const perms = usePermissions();
   const { message } = App.useApp();
+  const dispatch = useAppDispatch();
   const [form] = Form.useForm();
 
   const canCreate = perms.can('roles', 'create');
@@ -93,6 +95,9 @@ export default function RolesPage() {
     try {
       if (editing) {
         await updateRole({ id: editing.uid, body }).unwrap();
+        // The edited role may be this admin's own: re-read which dashboard
+        // widgets it allows. Cheap, and the page can't tell which role it holds.
+        dispatch(adminApi.util.invalidateTags(['DashboardManifest']));
         message.success('Role updated');
       } else {
         await createRole(body).unwrap();

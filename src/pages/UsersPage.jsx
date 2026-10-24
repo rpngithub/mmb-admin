@@ -13,7 +13,7 @@ import {
   App,
 } from 'antd';
 import { ReloadOutlined, EyeOutlined, BellOutlined } from '@ant-design/icons';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import dayjs from 'dayjs';
 import {
   useUsersListQuery,
@@ -34,7 +34,17 @@ export default function UsersPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [search, setSearch] = useState('');
-  const [viewUid, setViewUid] = useState(null);
+  // `?uid=` opens that user's drawer (dashboard widgets link here).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [viewUid, setViewUidState] = useState(() => searchParams.get('uid'));
+  const setViewUid = (uid) => {
+    setViewUidState(uid);
+    if (!uid && searchParams.has('uid')) {
+      const next = new URLSearchParams(searchParams);
+      next.delete('uid');
+      setSearchParams(next, { replace: true });
+    }
+  };
 
   const { data, isLoading, isFetching, refetch } = useUsersListQuery({
     search: search || undefined,

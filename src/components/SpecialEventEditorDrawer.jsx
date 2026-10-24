@@ -52,16 +52,17 @@ const DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => {
  * Linked designs needs an event uid, so for a NEW event you save Details first;
  * the drawer keeps that uid and unlocks the tab.
  */
-export default function SpecialEventEditorDrawer({ open, event, onClose, onSaved }) {
+export default function SpecialEventEditorDrawer({ open, event, initialTab, onClose, onSaved }) {
   const [workingUid, setWorkingUid] = useState(event?.uid || null);
   const [tab, setTab] = useState('details');
 
   useEffect(() => {
     if (open) {
       setWorkingUid(event?.uid || null);
-      setTab('details');
+      // Linked designs needs a uid, so a deep link to it only applies to an existing event.
+      setTab(initialTab === 'templates' && event?.uid ? 'templates' : 'details');
     }
-  }, [open, event]);
+  }, [open, event, initialTab]);
 
   const isCreate = !workingUid;
 
