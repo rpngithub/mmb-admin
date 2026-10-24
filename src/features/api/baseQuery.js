@@ -110,11 +110,13 @@ export const baseQueryWithReauth = async (args, api, extraOptions = {}) => {
   }
 
   // Success — unwrap the envelope and hoist `meta.total` onto the query meta.
+  // The whole envelope `meta` rides along as `envelope` for endpoints that need
+  // more than the total (e.g. a dashboard widget's generated_at / cached).
   const body = result.data;
   const total = body?.meta?.total;
   const unwrapped = body && Object.prototype.hasOwnProperty.call(body, 'data') ? body.data : body;
   return {
     data: unwrapped,
-    meta: { ...result.meta, total },
+    meta: { ...result.meta, total, envelope: body?.meta },
   };
 };

@@ -1,5 +1,8 @@
+import { useMemo } from 'react';
 import { Switch, Checkbox, Typography, Alert } from 'antd';
 import { PERMISSION_CATALOG, ACTIONS } from '../resources/permissionCatalog';
+import { useGetDashboardManifestQuery } from '../features/api/adminApi';
+import { mergeWidgetCatalog } from '../lib/dashboard';
 
 const { Text } = Typography;
 
@@ -128,8 +131,66 @@ export default function PermissionEditor({ value, onChange }) {
               </div>
             );
           })}
+
+          <DashboardWidgetsPicker perms={perms} emit={emit} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * One checkbox per dashboard widget (`dashboard.<widget_key>`), labelled with
+ * the manifest's titles. Widgets are always granted individually — this never
+ * emits `dashboard.*`; a role that already holds it shows every box ticked, and
+ * the first change rewrites it as the explicit list.
+ */
+function DashboardWidgetsPicker({ perms, emit }) {
+  // The manifest is trimmed to the editing admin's own grants; the static
+  // catalog fills in the rest so every widget is always offered.
+  const { data } = useGetDashboardManifestQuery();
+  const widgets = useMemo(() => mergeWidgetCatalog(data?.widgets), [data]);
+
+  const wildcard = perms.includes('dashboard.*');
+  const selected = wildcard
+    ? widgets.map((w) => w.permission)
+    : perms.filter((p) => p.startsWith('dashboard.'));
+
+  const onChange = (next) => {
+    const rest = perms.filter((p) => !p.startsWith('dashboard.'));
+    // Keep the catalog order so saved lists read the same as the dashboard.
+    const ordered = widgets.map((w) => w.permission).filter((p) => next.includes(p));
+    emit([...rest, ...ordered]);
+  };
+
+  return (
+    <div style={{ borderTop: '1px solid rgba(5,5,5,0.06)', paddingTop: 10, marginTop: 4 }}>
+      <Text strong>Dashboard widgets</Text>
+      <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
+        Each widget is its own permission — grant them individually.
+      </Text>
+      {wildcard && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 8 }}
+          message={
+            <>
+              This role holds <code>dashboard.*</code> (every widget). Changing a box replaces it
+              with the explicit list.
+            </>
+          }
+        />
+      )}
+      <Checkbox.Group value={selected} onChange={onChange} style={{ width: '100%' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }}>
+          {widgets.map((w) => (
+            <Checkbox key={w.permission} value={w.permission}>
+              {w.title}
+            </Checkbox>
+          ))}
+        </div>
+      </Checkbox.Group>
     </div>
   );
 }

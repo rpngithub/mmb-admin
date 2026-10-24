@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Tabs, Badge } from 'antd';
 import CategoriesManager from '../components/CategoriesManager';
 import IndustrySuggestionsQueue from '../components/IndustrySuggestionsQueue';
@@ -10,7 +11,11 @@ import { useBusinessCategoriesFilteredQuery } from '../features/api/adminApi';
  * label — a queue nobody notices is a queue nobody works.
  */
 export default function BusinessCategoriesPage() {
-  const [tab, setTab] = useState('industries');
+  // `?tab=suggestions` lands on the queue (the dashboard's pending-industries widget).
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState(() =>
+    searchParams.get('tab') === 'suggestions' ? 'suggestions' : 'industries',
+  );
 
   // Cheap enough to keep live on both tabs: it drives the count badge.
   const { data: pending } = useBusinessCategoriesFilteredQuery({ status: 'pending' });

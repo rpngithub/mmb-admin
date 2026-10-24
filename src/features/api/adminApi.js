@@ -29,6 +29,8 @@ const SPECIAL_TAGS = [
   'NotificationCampaigns',
   'UserNotifications',
   'PageSections',
+  'DashboardManifest',
+  'DashboardWidget',
 ];
 
 /**
@@ -1770,6 +1772,32 @@ export const adminApi = createApi({
       invalidatesTags: [{ type: 'PageSections', id: 'LIST' }],
     }),
 
+    // ---- Dashboard ------------------------------------------------------
+    // The manifest lists ONLY the widgets this admin's permissions allow
+    // (`dashboard.<widget_key>`), already in display order — the page is built
+    // from it, never from a per-role list. No grants → 200 with empty arrays.
+    getDashboardManifest: builder.query({
+      query: () => ({ url: '/admin/dashboard/widgets' }),
+      extraOptions: { silent: true },
+      transformResponse: (data) => ({
+        sections: Array.isArray(data?.sections) ? data.sections : [],
+        widgets: Array.isArray(data?.widgets) ? data.widgets : [],
+      }),
+      providesTags: ['DashboardManifest'],
+    }),
+    // One widget's payload. Silent: errors render inside that widget's card so
+    // one failing widget never toasts over the rest. `meta` (generated_at,
+    // cached) comes from the envelope — the base query passes it through.
+    getDashboardWidget: builder.query({
+      query: ({ key, ...params }) => ({
+        url: `/admin/dashboard/widgets/${key}`,
+        params: cleanParams(params),
+      }),
+      extraOptions: { silent: true },
+      transformResponse: (data, meta) => ({ data: data ?? {}, meta: meta?.envelope || {} }),
+      providesTags: (_r, _e, { key }) => [{ type: 'DashboardWidget', id: key }],
+    }),
+
     // ---- Generic CRUD resources (generated from config) -------------------
     ...buildGenericEndpoints(builder),
   }),
@@ -1943,4 +1971,7 @@ export const {
   usePageSectionItemUpdateMutation,
   usePageSectionItemRemoveMutation,
   usePageSectionItemsReorderMutation,
+  // Dashboard — manifest + one query per widget
+  useGetDashboardManifestQuery,
+  useGetDashboardWidgetQuery,
 } = adminApi;

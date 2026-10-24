@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Table, Typography, Space, Input, Button, Tag, App } from 'antd';
 import {
   ReloadOutlined,
@@ -63,6 +64,22 @@ export default function SpecialEventsPage() {
   const [removeEvent] = adminApi.endpoints.specialEventsRemove.useMutation();
 
   const events = useMemo(() => eventsQuery.data || [], [eventsQuery.data]);
+
+  // `?uid=<event>&tab=templates` opens that event's editor on the given tab —
+  // the dashboard's "events without templates" rows link here. Consumed once,
+  // then stripped so closing the drawer doesn't reopen it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepUid = searchParams.get('uid');
+  const deepTab = searchParams.get('tab');
+  useEffect(() => {
+    if (!deepUid || !eventsQuery.data) return;
+    const event = eventsQuery.data.find((e) => e.uid === deepUid);
+    if (event) setEditor({ open: true, event, tab: deepTab === 'templates' ? 'templates' : 'details' });
+    const next = new URLSearchParams(searchParams);
+    next.delete('uid');
+    next.delete('tab');
+    setSearchParams(next, { replace: true });
+  }, [deepUid, deepTab, eventsQuery.data, searchParams, setSearchParams]);
 
   const rows = useMemo(() => {
     if (!search.trim()) return events;
@@ -200,6 +217,7 @@ export default function SpecialEventsPage() {
       <SpecialEventEditorDrawer
         open={editor.open}
         event={editor.event}
+        initialTab={editor.tab}
         onClose={() => setEditor({ open: false, event: null })}
         onSaved={() => {
           eventsQuery.refetch();
