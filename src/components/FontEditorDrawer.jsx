@@ -36,6 +36,7 @@ import {
   guessVariant,
   weightLabel,
 } from '../lib/fontFiles';
+import { uploadErrorText, uploadSingle } from '../lib/assetUpload';
 
 const { Text, Paragraph } = Typography;
 
@@ -281,25 +282,19 @@ function FilesPanel({ uid, onSaved }) {
 
   const removeRow = (key) => setRows((rs) => rs.filter((r) => r.key !== key));
 
-  /** presign → PUT bytes straight to S3 → confirm (pending→active). */
-  const uploadOne = async (file) => {
-    const contentType = file.type || contentTypeFor(file.name);
-    const { key, upload_url, required_headers } = await presign({
+  /**
+   * presign (with size) → PUT bytes straight to S3 → confirm. Confirm checks
+   * the file exists and is within its cap and DELETES it otherwise, so a
+   * rejected key is thrown, never added as a row.
+   */
+  const uploadOne = (file) =>
+    uploadSingle({
+      file,
       target: { type: 'image_slot', slot: 'font_file' },
-      filename: file.name,
-      content_type: contentType,
-    }).unwrap();
-
-    const res = await fetch(upload_url, {
-      method: 'PUT',
-      headers: { 'Content-Type': contentType, ...(required_headers || {}) },
-      body: file,
+      contentType: file.type || contentTypeFor(file.name),
+      presign,
+      confirm,
     });
-    if (!res.ok) throw new Error(`S3 upload failed (${res.status})`);
-
-    await confirm([key]).unwrap();
-    return key;
-  };
 
   const beforeUpload = (file) => {
     if (!formatFromFilename(file.name)) {
@@ -333,7 +328,7 @@ function FilesPanel({ uid, onSaved }) {
       onSuccess?.({}, file);
     } catch (err) {
       onError?.(err);
-      message.error(`${file.name}: ${err?.message || 'upload failed'}`);
+      message.error(`${file.name}: ${uploadErrorText(err, 'upload failed')}`);
     } finally {
       setUploading((n) => n - 1);
     }

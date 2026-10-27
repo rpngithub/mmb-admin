@@ -20,7 +20,7 @@ import {
 } from '@ant-design/icons';
 import JSZip from 'jszip';
 import { adminApi } from '../features/api/adminApi';
-import { MULTIPART_THRESHOLD, uploadSingle, uploadMultipart } from '../lib/assetUpload';
+import { uploadErrorText, uploadFile, uploadSingle } from '../lib/assetUpload';
 import ImageThumb from './ImageThumb';
 
 const { Text, Paragraph } = Typography;
@@ -191,17 +191,8 @@ function ThumbnailReplace({ uid, familyUid, onDone }) {
   const customRequest = async ({ file, onSuccess, onError }) => {
     setBusy(true);
     try {
-      const { upload_url, required_headers } = await presign({
-        target: { type: 'template_file', template_uid: uid },
-        filename: file.name,
-        content_type: file.type,
-      }).unwrap();
-      const res = await fetch(upload_url, {
-        method: 'PUT',
-        headers: { 'Content-Type': file.type, ...(required_headers || {}) },
-        body: file,
-      });
-      if (!res.ok) throw new Error(`S3 upload failed (${res.status})`);
+      // No uploads/confirm here — bundle/confirm finalizes the object.
+      await uploadSingle({ file, target: { type: 'template_file', template_uid: uid }, presign });
       await bundleConfirm({ uid, familyUid, thumbnail_filename: file.name }).unwrap();
       onSuccess?.({}, file);
       message.success('Thumbnail updated');
@@ -262,6 +253,7 @@ export default function TemplateBundlePanel({
   const [initiate] = adminApi.endpoints.multipartInitiate.useMutation();
   const [presignParts] = adminApi.endpoints.multipartPresignParts.useMutation();
   const [complete] = adminApi.endpoints.multipartComplete.useMutation();
+  const [abortMultipart] = adminApi.endpoints.multipartAbort.useMutation();
   const [bundleConfirm] = adminApi.endpoints.templateBundleConfirm.useMutation();
   const [bundleReset] = adminApi.endpoints.templateBundleReset.useMutation();
 
@@ -277,7 +269,8 @@ export default function TemplateBundlePanel({
   const [progress, setProgress] = useState({ pct: 0, current: null });
   const [error, setError] = useState(null);
 
-  const xhrRef = useRef(null);
+  const xhrsRef = useRef(new Set());
+  const sessionRef = useRef({}); // the in-flight multipart upload, if any
   const cancelRef = useRef(false);
 
   const resetSelection = (errMsg = null) => {
@@ -411,24 +404,25 @@ export default function TemplateBundlePanel({
         const target = { type: 'template_file', template_uid: uid };
         const onProgress = (p) =>
           setProgress((pr) => ({ ...pr, pct: Math.round(((i + p) / total) * 100) }));
+        // Multipart PUTs several parts at once — keep every handle for cancel.
         const registerXhr = (x) => {
-          xhrRef.current = x;
+          xhrsRef.current.add(x);
         };
 
-        if (f.size > MULTIPART_THRESHOLD) {
-          await uploadMultipart({
-            file: f,
-            target,
-            session: {},
-            initiate,
-            presignParts,
-            complete,
-            onProgress,
-            registerXhr,
-          });
-        } else {
-          await uploadSingle({ file: f, target, presign, onProgress, registerXhr });
-        }
+        sessionRef.current = {};
+        await uploadFile({
+          file: f,
+          target,
+          session: sessionRef.current,
+          presign,
+          initiate,
+          presignParts,
+          complete,
+          onProgress,
+          registerXhr,
+          shouldAbort: () => cancelRef.current,
+        });
+        xhrsRef.current.clear();
       }
 
       // all files uploaded → read + validate content JSON, then confirm
@@ -452,22 +446,35 @@ export default function TemplateBundlePanel({
       message.success('Bundle uploaded and confirmed');
       onConfirmed?.();
     } catch (err) {
+      // An unfinished multipart upload's parts are billed until it is aborted.
+      const s = sessionRef.current;
+      sessionRef.current = {};
+      if (s?.key && s?.upload_id) {
+        abortMultipart({ key: s.key, upload_id: s.upload_id })
+          .unwrap()
+          .catch(() => {
+            /* best-effort cleanup */
+          });
+      }
       if (err?.name === 'AbortError') {
         setPhase('ready');
         return;
       }
-      setError(err?.message || 'Bundle upload failed.');
+      setError(uploadErrorText(err, 'Bundle upload failed.'));
       setPhase('error');
     }
   };
 
   const cancel = () => {
     cancelRef.current = true;
-    try {
-      xhrRef.current?.abort();
-    } catch {
-      /* ignore */
-    }
+    xhrsRef.current.forEach((x) => {
+      try {
+        x.abort();
+      } catch {
+        /* ignore */
+      }
+    });
+    xhrsRef.current.clear();
   };
 
   const onReset = () => {

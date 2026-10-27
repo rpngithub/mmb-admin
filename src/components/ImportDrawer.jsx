@@ -67,7 +67,7 @@ const IMPORT_SPECS = {
       ],
       [
         'thumbnail_s3_key',
-        'The preview shown to users who have not paid — an image, under assets/thumbnail/, whatever the asset type is. Blank keeps the current one, NONE removes it. Effectively required on a premium row: without it the app shows an empty card.',
+        'The preview shown to users who have not paid — an image, under assets/thumbnail/, whatever the asset type is. Blank keeps the current one, NONE removes it. Required on a NEW video row (the row fails without it). Effectively required on a premium row: without it the app shows an empty card.',
       ],
       ['is_premium', '1 = paid plans only, 0 = free.'],
       ['status', 'active or inactive (1/0 also accepted).'],
@@ -78,7 +78,7 @@ const IMPORT_SPECS = {
     ],
     // Where a key is expected to live and what the file should be, per type.
     locations: [
-      ['icon, emoji, shape, bg', 'assets/<type>/', 'png, jpg, webp, svg'],
+      ['icon, emoji, shape, bg', 'assets/<type>/', 'png, jpg, webp, gif, svg'],
       ['audio', 'assets/audio/', 'mp3, wav, m4a, aac, ogg'],
       ['video', 'assets/video/', 'mp4, webm, mov'],
       ['animated', 'assets/animated/', 'json (Lottie), gif, webp, mp4'],
