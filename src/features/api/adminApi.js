@@ -792,9 +792,33 @@ export const adminApi = createApi({
     // Any authenticated admin may call these (no per-resource permission). The
     // PUT of the bytes happens browser→S3 directly (native fetch, not RTKQ).
     // Silent so the upload widget can surface its own messages.
+    //
+    // Every presign response carries the admin upload caps as `limits` (bytes:
+    // { image:{max_bytes,batch_max_files,types}, video:{…}, batch_max_total_bytes }).
+    // They are NOT in the public GET /config, so they are parked in the
+    // `uploadLimits` cache entry below for the pickers to validate against.
     uploadPresign: builder.mutation({
       query: (body) => ({ url: '/admin/uploads/presign', method: 'POST', body }),
       extraOptions: { silent: true },
+      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          if (data?.limits) {
+            dispatch(adminApi.util.upsertQueryData('uploadLimits', undefined, data.limits));
+          }
+        } catch {
+          // the caller handles the failed presign
+        }
+      },
+    }),
+    // Never fetched: null until a presign has run in this session (the server's
+    // presign check is then the first line), then the last `limits` seen. The
+    // caps are editable in App Settings (group `uploads`), so a settings edit
+    // drops them back to null rather than leaving stale numbers.
+    uploadLimits: builder.query({
+      queryFn: () => ({ data: null }),
+      keepUnusedDataFor: 24 * 60 * 60,
+      providesTags: [{ type: 'appSettings', id: 'LIST' }],
     }),
     uploadConfirm: builder.mutation({
       query: (keys) => ({ url: '/admin/uploads/confirm', method: 'POST', body: { keys } }),
@@ -1868,6 +1892,7 @@ export const {
   usePublicConfigQuery,
   useUploadPresignMutation,
   useUploadConfirmMutation,
+  useUploadLimitsQuery,
   useBusinessCategorySetTagsMutation,
   useBusinessCategoryRelatedQuery,
   useBusinessCategorySetRelatedMutation,

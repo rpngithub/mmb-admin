@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Table,
@@ -32,6 +32,7 @@ import ImageUploadField from '../components/ImageUploadField';
 import ImportDrawer from '../components/ImportDrawer';
 import MissingFilesDrawer from '../components/MissingFilesDrawer';
 import TagSelect from '../components/TagSelect';
+import { fmtBytes, uploadErrorText, uploadSingle } from '../lib/assetUpload';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -41,6 +42,31 @@ const STATUSES = ['active', 'inactive'];
 
 const isTrue = (v) => v === true || v === 1 || v === '1';
 const typeOptions = ASSET_TYPES.map((t) => ({ label: t, value: t }));
+
+// The file facts the panel reads in the browser and sends with the asset. The
+// server cannot decode media, so these are only as good as what we send; rows
+// from before them, and CSV imports, have none.
+const FILE_INFO_FIELDS = ['width', 'height', 'duration_ms', 'bytes', 'content_type'];
+
+const fmtDuration = (ms) => {
+  const s = Math.round(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+};
+
+/** "0:12 · 1080×1920 · 24 MB" — whichever parts the row has. */
+function fileSummary(a) {
+  const parts = [];
+  if (a.duration_ms != null) parts.push(fmtDuration(Number(a.duration_ms)));
+  if (a.width && a.height) parts.push(`${a.width}×${a.height}`);
+  if (a.bytes != null) parts.push(fmtBytes(Number(a.bytes)));
+  return parts.join(' · ');
+}
+
+/** Fields a 400 can name that this form has an input for. */
+const FORM_FIELDS = new Set(['name', 'asset_type', 'category_id', 's3_key', 'thumbnail_s3_key', 'status']);
 
 /**
  * A premium asset is served to non-paying viewers WITHOUT its `s3_key` — only
@@ -169,6 +195,15 @@ export default function AssetsPage() {
       key: 'asset_type',
       width: 100,
       render: (v) => <Tag>{v}</Tag>,
+    },
+    {
+      title: 'File',
+      key: 'file',
+      width: 190,
+      render: (_v, a) => {
+        const s = fileSummary(a);
+        return s ? <Text type="secondary">{s}</Text> : <Text type="secondary">—</Text>;
+      },
     },
     {
       title: 'Category',
@@ -411,6 +446,16 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
   const [createTrigger] = adminApi.endpoints.assetsCreate.useMutation();
   const [updateTrigger] = adminApi.endpoints.assetsUpdate.useMutation();
   const [setTags] = adminApi.endpoints.assetSetTags.useMutation();
+  const [presign] = adminApi.endpoints.uploadPresign.useMutation();
+  const [confirm] = adminApi.endpoints.uploadConfirm.useMutation();
+
+  // What the browser read from the file uploaded in THIS session of the editor
+  // (null = the file was not replaced, so its stored facts are left alone).
+  const [fileInfo, setFileInfo] = useState(null);
+  const [framing, setFraming] = useState(false);
+  // The preview key we generated from a video frame — replaced (not kept) when
+  // the video is, so a new video never ships with the old one's still.
+  const autoThumbRef = useRef(null);
 
   // Tags are not in the list payload — fetch them for the asset being edited.
   const { data: tagData } = adminApi.endpoints.assetTags.useQuery(asset?.uid, {
@@ -420,9 +465,13 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
   const assetType = Form.useWatch('asset_type', form);
   const isPremium = Boolean(Form.useWatch('is_premium', form));
   const thumbnailKey = Form.useWatch('thumbnail_s3_key', form);
+  const isVideo = assetType === 'video';
 
   useEffect(() => {
     if (!open) return;
+    setFileInfo(null);
+    setFraming(false);
+    autoThumbRef.current = null;
     if (asset) {
       form.setFieldsValue({
         name: asset.name,
@@ -446,6 +495,38 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
       form.setFieldsValue({ tag_ids: tagData.Tags.map((t) => t.id) });
     }
   }, [open, asset, tagData, form]);
+
+  /**
+   * A video's preview pre-filled from a still frame grabbed in the browser —
+   * never the video itself: the preview is what a viewer who has not paid
+   * gets. Only when the preview is empty, or is a still we made from an
+   * earlier video; an uploaded preview is never overwritten.
+   */
+  const onFileInfo = async (info) => {
+    setFileInfo(info);
+    if (!info?.frame) return;
+    const current = form.getFieldValue('thumbnail_s3_key');
+    if (current && current !== autoThumbRef.current) return;
+    setFraming(true);
+    try {
+      const base = (form.getFieldValue('name') || 'video').trim().replace(/[^\w-]+/g, '-') || 'video';
+      const still = new File([info.frame], `${base}-preview.jpg`, { type: 'image/jpeg' });
+      const key = await uploadSingle({
+        file: still,
+        target: { type: 'image_slot', slot: 'asset_thumbnail' },
+        presign,
+        confirm,
+      });
+      autoThumbRef.current = key;
+      form.setFieldsValue({ thumbnail_s3_key: key });
+      form.validateFields(['thumbnail_s3_key']).catch(() => {});
+      message.info('Preview set from a frame of the video — replace it with a watermarked still if this asset is premium.');
+    } catch (err) {
+      message.warning(`Could not make a preview from the video (${uploadErrorText(err)}) — upload one.`);
+    } finally {
+      setFraming(false);
+    }
+  };
 
   const handleSubmit = async () => {
     let values;
@@ -485,6 +566,15 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
     if (thumbnail) body.thumbnail_s3_key = thumbnail;
     else if (isEdit && asset.thumbnail_s3_key) body.thumbnail_s3_key = null;
 
+    // File facts (all optional + nullable) only for a file uploaded here. On a
+    // replace, an unknown fact is sent as null so the old file's value goes.
+    if (fileInfo) {
+      FILE_INFO_FIELDS.forEach((f) => {
+        const v = fileInfo[f] ?? null;
+        if (v != null || isEdit) body[f] = v;
+      });
+    }
+
     setSubmitting(true);
     try {
       let uid;
@@ -506,8 +596,13 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
       message.success(`Asset ${isEdit ? 'updated' : 'created'}`);
       onSaved?.();
       onClose();
-    } catch {
-      // create/update error already surfaced by baseQuery
+    } catch (err) {
+      // baseQuery already toasted it; put field-level 400s (e.g. a video with
+      // no thumbnail_s3_key) under their fields too.
+      const fields = (Array.isArray(err?.details) ? err.details : [])
+        .filter((d) => FORM_FIELDS.has(d?.field))
+        .map((d) => ({ name: d.field, errors: [d.message] }));
+      if (fields.length) form.setFields(fields);
     } finally {
       setSubmitting(false);
     }
@@ -524,7 +619,12 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
         <div style={{ textAlign: 'right' }}>
           <Space>
             <Button onClick={onClose}>Cancel</Button>
-            <Button type="primary" loading={submitting} onClick={handleSubmit}>
+            <Button
+              type="primary"
+              loading={submitting}
+              disabled={framing}
+              onClick={handleSubmit}
+            >
               Save
             </Button>
           </Space>
@@ -555,7 +655,7 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
             extra="The real deliverable. Withheld from non-paying users on a premium asset."
             rules={[{ required: true, message: 'A file is required' }]}
           >
-            <AssetFileUpload assetType={assetType} />
+            <AssetFileUpload assetType={assetType} onFileInfo={onFileInfo} />
           </Form.Item>
 
           <Form.Item
@@ -563,8 +663,18 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
             label="Preview shown to non-paying users"
             style={{ flex: '1 1 260px' }}
             tooltip="Returned to everyone — guests, free plans, paid plans — whatever the asset is. An mp3 or a Lottie file still needs an image here."
-            extra="Upload a small, watermarked, flattened copy. Never the original artwork."
+            extra={
+              framing
+                ? 'Taking a still from the video…'
+                : isVideo
+                  ? 'Required for a video — filled from a frame of it after upload. Use a still image, never the video.'
+                  : 'Upload a small, watermarked, flattened copy. Never the original artwork.'
+            }
             rules={[
+              {
+                required: isVideo,
+                message: 'A video needs a preview image — it is all a non-paying viewer sees.',
+              },
               // The server stores whatever key it is given: it cannot tell a
               // 150px watermarked preview from a second copy of the artwork.
               ({ getFieldValue }) => ({
@@ -579,7 +689,13 @@ function AssetEditor({ open, asset, categories, onClose, onSaved }) {
               }),
             ]}
           >
-            <ImageUploadField slot="asset_thumbnail" accept="image/*" />
+            <ImageUploadField
+              slot="asset_thumbnail"
+              disabled={framing}
+              onUploaded={() => {
+                autoThumbRef.current = null; // an admin's own preview is kept
+              }}
+            />
           </Form.Item>
         </div>
 

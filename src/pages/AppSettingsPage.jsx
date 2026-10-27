@@ -42,7 +42,7 @@ const DEFAULT_SIZE_KEY = 'default_template_size';
 
 // Stable-ish ordering for the grouped sections; unknown groups fall to the end
 // alphabetically, and settings with no group land in "Ungrouped".
-const GROUP_ORDER = ['general', 'billing', 'media'];
+const GROUP_ORDER = ['general', 'billing', 'media', 'uploads'];
 const UNGROUPED = 'Ungrouped';
 
 function groupRank(name) {
@@ -500,8 +500,14 @@ function SettingEditor({ open, record, onClose, onSaved }) {
       }
       onSaved?.();
       onClose();
-    } catch {
-      /* baseQuery raised the server message (incl. 409 duplicate key) */
+    } catch (err) {
+      // baseQuery raised the server message (incl. 409 duplicate key). A value
+      // the server refuses — e.g. an upload_* cap of 0 or over 5120 MB, a type
+      // it cannot check, SVG in a user list — also goes under its field.
+      const fields = (Array.isArray(err?.details) ? err.details : [])
+        .filter((d) => d?.message && ['value', 'key', 'group', 'description'].includes(d.field))
+        .map((d) => ({ name: d.field, errors: [d.message] }));
+      if (fields.length) form.setFields(fields);
     } finally {
       setSubmitting(false);
     }
