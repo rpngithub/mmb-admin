@@ -10,6 +10,7 @@ import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 import ImageThumb from '../components/ImageThumb';
 import VariantEditorDrawer from '../components/VariantEditorDrawer';
+import { confirmDeleteVariant, formatMoney, toAmount } from '../lib/variants';
 
 const { Title, Text } = Typography;
 
@@ -23,7 +24,7 @@ const isTrue = (v) => v === true || v === 1 || v === '1';
  */
 export default function VariantsPage() {
   const perms = usePermissions();
-  const { message, modal } = App.useApp();
+  const { message, modal, notification } = App.useApp();
 
   const canCreate = perms.can('variants', 'create');
   const canUpdate = perms.can('variants', 'update');
@@ -35,7 +36,8 @@ export default function VariantsPage() {
 
   const variantsQuery = adminApi.endpoints.variantsList.useQuery();
   const seriesQuery = adminApi.endpoints.brandSeriesList.useQuery();
-  const [removeVariant] = adminApi.endpoints.variantsRemove.useMutation();
+  const [removeVariant] = adminApi.endpoints.variantRemove.useMutation();
+  const [updateVariant] = adminApi.endpoints.variantUpdate.useMutation();
 
   const variants = useMemo(() => variantsQuery.data || [], [variantsQuery.data]);
   const seriesList = useMemo(() => seriesQuery.data || [], [seriesQuery.data]);
@@ -56,22 +58,15 @@ export default function VariantsPage() {
     return list;
   }, [variants, seriesFilter, search]);
 
-  const onDelete = (variant) => {
-    modal.confirm({
-      title: `Delete variant "${variant.name}"?`,
-      content: 'Its template associations are removed; the templates themselves are untouched.',
-      okText: 'Delete',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await removeVariant(variant.uid).unwrap();
-          message.success('Variant deleted');
-        } catch {
-          // error notification handled by baseQuery
-        }
-      },
+  const onDelete = (variant) =>
+    confirmDeleteVariant({
+      variant,
+      modal,
+      message,
+      notification,
+      remove: removeVariant,
+      update: canUpdate ? updateVariant : undefined,
     });
-  };
 
   const columns = [
     {
@@ -99,6 +94,15 @@ export default function VariantsPage() {
         ) : (
           <Text type="secondary">—</Text>
         ),
+    },
+    {
+      // Pre-tax; null = not for sale.
+      title: 'Price',
+      dataIndex: 'price',
+      key: 'price',
+      width: 100,
+      render: (v) =>
+        toAmount(v) === null ? <Text type="secondary">—</Text> : formatMoney(v),
     },
     {
       title: 'Likes',

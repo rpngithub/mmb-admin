@@ -6,7 +6,7 @@ import {
   useFeatureTypeCreateMutation,
   useFeatureTypeUpdateMutation,
 } from '../features/api/adminApi';
-import { RESET_PERIODS, RESET_HINT, meterMap } from '../lib/meteredFeatures';
+import { RESET_PERIODS, RESET_HINT, FEATURE_KEY_HELP, meterMap } from '../lib/meteredFeatures';
 
 const { Text } = Typography;
 
@@ -109,6 +109,16 @@ export default function FeatureTypeEditorModal({ open, featureType, onClose, onS
 
   const allowedPeriods = meter?.reset_periods?.length ? meter.reset_periods : RESET_PERIODS;
   const periodOptions = allowedPeriods.map((v) => ({ label: v, value: v }));
+  // A meter with one period (brand_series → never) fixes it: the API 400s on
+  // anything else. A legacy row saved with another period is snapped to it so
+  // the next save goes through.
+  const periodLocked = isInteger && allowedPeriods.length === 1 && Boolean(meter);
+
+  useEffect(() => {
+    if (open && periodLocked && resetPeriod && resetPeriod !== allowedPeriods[0]) {
+      form.setFieldsValue({ reset_period: allowedPeriods[0] });
+    }
+  }, [open, periodLocked, resetPeriod, allowedPeriods, form]);
 
   const onDataTypeChange = (next) => {
     setFormError(null);
@@ -250,12 +260,18 @@ export default function FeatureTypeEditorModal({ open, featureType, onClose, onS
           label="Reset period"
           extra={
             isInteger && RESET_HINT[resetPeriod] ? (
-              <Text type="secondary">{RESET_HINT[resetPeriod]}</Text>
+              <Text type="secondary">
+                {RESET_HINT[resetPeriod]}
+                {periodLocked && ' — fixed for this key'}
+              </Text>
             ) : undefined
           }
         >
-          <Select options={periodOptions} />
+          <Select options={periodOptions} disabled={periodLocked} />
         </Form.Item>
+        {isInteger && FEATURE_KEY_HELP[key] && (
+          <Alert type="info" showIcon style={{ marginBottom: 16 }} message={FEATURE_KEY_HELP[key]} />
+        )}
         {/* Gates the feature dropdown on Top-up Packs and on a support quota
             grant: the server refuses a pack for a feature that isn't flagged. */}
         <Form.Item

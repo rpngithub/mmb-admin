@@ -167,7 +167,10 @@ const PURCHASE_TYPES = [
   { key: 'subscription', label: 'Subscription' },
   { key: 'frame', label: 'Frame' },
   { key: 'quota_pack', label: 'Top-up pack' },
+  { key: 'variant', label: 'Brand Series variants' },
 ];
+const purchaseTypeLabel = (v) =>
+  v ? PURCHASE_TYPES.find((t) => t.key === v)?.label || humanize(v) : '—';
 
 function RevenueTrend({ data, params }) {
   const [mode, setMode] = useState('column');
@@ -299,7 +302,7 @@ function PaymentHealth({ data }) {
         locale={{ emptyText: 'No recent failures' }}
         columns={[
           { title: 'Amount', dataIndex: 'amount', render: fmtINR, align: 'right' },
-          { title: 'Type', dataIndex: 'purchase_type', render: (v) => (v ? humanize(v) : '—') },
+          { title: 'Type', dataIndex: 'purchase_type', render: purchaseTypeLabel },
           { title: 'Reason', dataIndex: 'reason', ellipsis: true, render: (v) => v || '—' },
           { title: 'User', dataIndex: 'user', render: (u) => <UserLink user={u} /> },
           { title: 'When', dataIndex: 'created_at', render: fmtDateTime },

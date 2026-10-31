@@ -31,7 +31,7 @@ const isTrue = (v) => v === true || v === 1 || v === '1';
  * Relations need a series uid, so for a NEW series you save Details first; the
  * drawer keeps that uid and unlocks the Relations tab.
  *
- * Nothing here gates access: plan entitlement lives on the VARIANT, not the
+ * Nothing here gates access: adding and buying attach to the VARIANT, not the
  * series. A series' is_locked is only a rollup of its variants.
  */
 export default function BrandSeriesEditorDrawer({ open, series, onClose, onSaved }) {
