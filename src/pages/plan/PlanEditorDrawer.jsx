@@ -38,6 +38,7 @@ import FeatureTypeEditorModal from '../../components/FeatureTypeEditorModal';
 import {
   RESET_MEANING,
   isUnenforced,
+  featureKeyHint,
   meterMap,
   meteredFeatureTypes,
   isFreePlan,
@@ -137,6 +138,8 @@ function FeatureRow({
   let valueHint = null;
   if (ft && isUnenforced(ft, meters)) {
     valueHint = <Text type="danger">Not enforced — nothing counts this feature</Text>;
+  } else if (featureKeyHint(ft)) {
+    valueHint = <Text type="secondary">{featureKeyHint(ft)}</Text>;
   } else if (dataType === 'integer' && RESET_MEANING[ft?.reset_period]) {
     valueHint = <Text type="secondary">{RESET_MEANING[ft.reset_period]}</Text>;
   }

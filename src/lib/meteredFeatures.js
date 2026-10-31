@@ -29,6 +29,19 @@ export const RESET_MEANING = {
   never: 'at most, at a time',
 };
 
+/**
+ * Per-key help that overrides the generic reset meaning. `brand_series` counts
+ * VARIANTS a business has added at a time (not series, not per month) and its
+ * reset period is fixed to `never` server-side.
+ */
+export const FEATURE_KEY_HELP = {
+  brand_series:
+    'How many Brand Series variants a business can add at once. Beyond this, users buy variants.',
+};
+
+/** Value-input hint on the plan editor: the per-key help wins over the reset meaning. */
+export const featureKeyHint = (featureType) => FEATURE_KEY_HELP[featureType?.key] || null;
+
 export const NOT_ENFORCED_TOOLTIP =
   'Nothing counts this feature. Change it to a metered key or make it boolean.';
 

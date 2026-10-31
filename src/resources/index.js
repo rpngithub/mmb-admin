@@ -133,8 +133,8 @@ export const RESOURCES = [
   // table, with icon/thumbnail upload and the ordered series relations. These
   // configs only supply nav/permission/endpoints; `fields`/`columns` are unused.
   //
-  // Gating lives on the VARIANT: plan entitlement and business adoption attach to
-  // a variant, never to its parent series.
+  // Gating lives on the VARIANT: adding to a business and buying attach to a
+  // variant, never to its parent series.
   resource({
     key: 'brandSeries',
     name: 'Brand Series',

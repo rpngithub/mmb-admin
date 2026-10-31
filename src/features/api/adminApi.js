@@ -1065,27 +1065,47 @@ export const adminApi = createApi({
       ],
     }),
 
-    // ---- Variants: premium (plan-scoped) surface ---------------------------
-    // Dedicated variant update used by the editor (all fields optional). Uses
-    // PATCH to match the variant contract; description, badge_id and likes_count
-    // are the editable extras beyond the generic create.
+    // ---- Variants ------------------------------------------------------------
+    // Every variant is shown to everyone; a user USES one only if their business
+    // added it while subscribed (plan limit = variants at a time) or they bought
+    // it outright. No plan ↔ variant relationship exists any more.
+    //
+    // Silent create/update used by the editor (PATCH is partial — changed fields
+    // only) so a 400's details[].field (price / strike_price, …) lands on the
+    // form item instead of a global toast. `price` / `strike_price` come back as
+    // DECIMAL strings or null; null on PATCH takes the variant off sale.
+    variantCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/variants', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'variants', id: 'LIST' }],
+    }),
     variantUpdate: builder.mutation({
       query: ({ uid, body }) => ({ url: `/admin/variants/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
       invalidatesTags: (_r, _e, { uid }) => [
         { type: 'variants', id: uid },
         { type: 'variants', id: 'LIST' },
       ],
     }),
+    // Silent: a variant anyone has BOUGHT can't be deleted (409 CONFLICT, "still
+    // referenced by other records") — the pages turn that into a "deactivate
+    // instead" notification rather than the bare toast.
+    variantRemove: builder.mutation({
+      query: (uid) => ({ url: `/admin/variants/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, uid) => [
+        { type: 'variants', id: uid },
+        { type: 'variants', id: 'LIST' },
+      ],
+    }),
 
-    // Variant relations — plan ENTITLEMENT + industry tags.
+    // Variant relations — industry tags.
     // GET → { id, uid, name, Plans:[…], Industries:[…], BusinessCategories:[…]
-    //         (deprecated duplicate), VariantBadge:{…} }.
+    //         (deprecated duplicate), VariantBadge:{…} }. `Plans` / `plan_ids`
+    // are deprecated and IGNORED by the API — never read or sent here.
     // PUT is a per-key full replace: each provided key replaces that whole set,
-    // an omitted key is left untouched (send plan_ids:[] to clear). Selecting
-    // plans is the core premium access control — an EMPTY array locks the variant
-    // to everyone; industries are just display/filter tags. Both invalidate the
-    // variant's :rel tag so the panels refetch. Silent — the panels surface their
-    // own success messages.
+    // an omitted key is left untouched; the body needs at least one key. Silent —
+    // the panel surfaces its own success message.
     variantRelations: builder.query({
       query: (uid) => ({ url: `/admin/variants/${uid}/relations` }),
       providesTags: (_r, _e, uid) => [{ type: 'variants', id: `${uid}:rel` }],
@@ -1906,8 +1926,10 @@ export const {
   useMultipartPresignPartsMutation,
   useMultipartCompleteMutation,
   useMultipartAbortMutation,
-  // Variants (premium, plan-scoped) + brand series relations
+  // Variants + brand series relations
+  useVariantCreateMutation,
   useVariantUpdateMutation,
+  useVariantRemoveMutation,
   useVariantRelationsQuery,
   useVariantSetRelationsMutation,
   useVariantTemplatesQuery,

@@ -158,6 +158,7 @@ export const PURCHASE_TYPE_COLORS = {
   subscription: SERIES_COLORS[0],
   frame: SERIES_COLORS[1],
   quota_pack: SERIES_COLORS[2],
+  variant: SERIES_COLORS[3],
 };
 export const PLATFORM_COLORS = {
   android: SERIES_COLORS[0],

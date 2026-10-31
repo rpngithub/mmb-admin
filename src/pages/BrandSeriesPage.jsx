@@ -12,6 +12,7 @@ import { usePermissions } from '../features/auth/usePermissions';
 import ImageThumb from '../components/ImageThumb';
 import BrandSeriesEditorDrawer from '../components/BrandSeriesEditorDrawer';
 import VariantEditorDrawer from '../components/VariantEditorDrawer';
+import { confirmDeleteVariant } from '../lib/variants';
 
 const { Title, Text } = Typography;
 
@@ -24,13 +25,13 @@ const activeTag = (v) => <Tag color={isTrue(v) ? 'green' : 'default'}>{isTrue(v)
  * list is flat/unfiltered). Series delete CASCADES to its variants — the confirm
  * warns hard and names the count.
  *
- * The series itself gates nothing: plan entitlement and business adoption attach
+ * The series itself gates nothing: adding to a business and buying both attach
  * to a VARIANT. Creating a variant needs `variants` permission, editing the
  * series needs `brand_series` — so the two are checked separately.
  */
 export default function BrandSeriesPage() {
   const perms = usePermissions();
-  const { message, modal } = App.useApp();
+  const { message, modal, notification } = App.useApp();
 
   const canCreateSeries = perms.can('brand_series', 'create');
   const canUpdateSeries = perms.can('brand_series', 'update');
@@ -46,7 +47,8 @@ export default function BrandSeriesPage() {
   const seriesQuery = adminApi.endpoints.brandSeriesList.useQuery();
   const variantsQuery = adminApi.endpoints.variantsList.useQuery();
   const [removeSeries] = adminApi.endpoints.brandSeriesRemove.useMutation();
-  const [removeVariant] = adminApi.endpoints.variantsRemove.useMutation();
+  const [removeVariant] = adminApi.endpoints.variantRemove.useMutation();
+  const [updateVariant] = adminApi.endpoints.variantUpdate.useMutation();
 
   const seriesList = useMemo(() => seriesQuery.data || [], [seriesQuery.data]);
   const variants = useMemo(() => variantsQuery.data || [], [variantsQuery.data]);
@@ -113,22 +115,15 @@ export default function BrandSeriesPage() {
     }
   };
 
-  const onDeleteVariant = (variant) => {
-    modal.confirm({
-      title: `Delete variant "${variant.name}"?`,
-      content: 'Its template associations are removed; the templates themselves are untouched.',
-      okText: 'Delete',
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        try {
-          await removeVariant(variant.uid).unwrap();
-          message.success('Variant deleted');
-        } catch {
-          // error notification handled by baseQuery
-        }
-      },
+  const onDeleteVariant = (variant) =>
+    confirmDeleteVariant({
+      variant,
+      modal,
+      message,
+      notification,
+      remove: removeVariant,
+      update: canUpdateVariant ? updateVariant : undefined,
     });
-  };
 
   const seriesColumns = [
     {

@@ -17,21 +17,26 @@ import {
 } from 'antd';
 import { adminApi } from '../features/api/adminApi';
 import ImageUploadField from './ImageUploadField';
+import { DEACTIVATE_EXPLAINER, toAmount } from '../lib/variants';
+import { applyPackServerError } from '../lib/quotaPacks';
 
 const { Text, Paragraph } = Typography;
 const isTrue = (v) => v === true || v === 1 || v === '1';
 const isActiveStatus = (s) => s === 'active';
 
 /**
- * Tabbed variant editor for the premium (plan-scoped) surface:
- *   • Details — name, description, brand series, badge, thumbnail, likes_count,
- *     order, active.
- *   • Plans (Access) — the premium entitlement multi-select (`plan_ids`).
+ * Tabbed variant editor:
+ *   • Details — name, description, brand series, badge, thumbnail, price,
+ *     strike price, likes_count, order, active.
  *   • Industries — display/filter tags (`industry_ids`).
  *   • Designs — the template families assigned to this variant (`family_ids`).
  *
- * Plans, Industries and Templates all need a variant uid, so for a NEW variant
- * you save Details first; the drawer keeps that uid and unlocks the rest.
+ * There is no plan access control: every variant is shown to everyone, and a
+ * user uses one by adding it to their business while subscribed or by buying
+ * it (see lib/variants). `plan_ids` is deprecated and never sent.
+ *
+ * Industries and Designs need a variant uid, so for a NEW variant you save
+ * Details first; the drawer keeps that uid and unlocks the rest.
  * `defaultSeriesId` pre-selects the brand series when creating from a series panel.
  */
 export default function VariantEditorDrawer({ open, variant, defaultSeriesId, onClose, onSaved }) {
@@ -68,18 +73,12 @@ export default function VariantEditorDrawer({ open, variant, defaultSeriesId, on
                 defaultSeriesId={defaultSeriesId}
                 onCreated={(newUid) => {
                   setWorkingUid(newUid);
-                  setTab('plans');
+                  setTab('templates');
                   onSaved?.();
                 }}
                 onSaved={onSaved}
               />
             ),
-          },
-          {
-            key: 'plans',
-            label: 'Plans (Access)',
-            disabled: isCreate,
-            children: workingUid ? <PlansPanel uid={workingUid} /> : <NeedsUid />,
           },
           {
             key: 'business',
@@ -105,43 +104,120 @@ function NeedsUid() {
 
 // ---- Details ---------------------------------------------------------------
 
+// Form items a 400's details[].field can be pinned to.
+const DETAIL_FIELDS = [
+  'name',
+  'description',
+  'series_id',
+  'badge_id',
+  'thumbnail_s3_key',
+  'price',
+  'strike_price',
+  'likes_count',
+  'display_order',
+  'is_active',
+];
+
+function detailValuesFrom(full, defaultSeriesId) {
+  if (!full) {
+    return {
+      is_active: true,
+      likes_count: 0,
+      display_order: 0,
+      series_id: defaultSeriesId ?? undefined,
+      price: undefined,
+      strike_price: undefined,
+    };
+  }
+  return {
+    series_id: full.series_id,
+    badge_id: full.badge_id ?? undefined,
+    name: full.name,
+    description: full.description ?? '',
+    thumbnail_s3_key: full.thumbnail_s3_key ?? undefined,
+    // DECIMAL strings ("499.00") or null — InputNumber needs numbers.
+    price: toAmount(full.price) ?? undefined,
+    strike_price: toAmount(full.strike_price) ?? undefined,
+    likes_count: full.likes_count ?? 0,
+    display_order: full.display_order ?? 0,
+    is_active: isTrue(full.is_active),
+  };
+}
+
+function detailBodyFrom(values) {
+  const description = values.description?.trim();
+  return {
+    series_id: values.series_id,
+    badge_id: values.badge_id ?? null,
+    name: (values.name || '').trim(),
+    description: description ? description : null,
+    thumbnail_s3_key: values.thumbnail_s3_key ?? null,
+    // Empty = not for sale: null is the only way to clear it.
+    price: toAmount(values.price),
+    strike_price: toAmount(values.strike_price),
+    likes_count: values.likes_count ?? 0,
+    display_order: values.display_order ?? 0,
+    is_active: values.is_active ? 1 : 0,
+  };
+}
+
+// API rule: null or ≥ 1, at most two decimals (the inputs' precision={2}
+// covers the decimals).
+const moneyRule = {
+  validator: (_r, v) =>
+    v === null || v === undefined || v === '' || Number(v) >= 1
+      ? Promise.resolve()
+      : Promise.reject(new Error('Must be at least ₹1 — or leave empty')),
+};
+
 function DetailsForm({ uid, defaultSeriesId, onCreated, onSaved }) {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState(null);
   const isEdit = Boolean(uid);
 
   const { data: seriesList } = adminApi.endpoints.brandSeriesList.useQuery();
   const { data: badges } = adminApi.endpoints.variantBadgesList.useQuery();
   const { data: full, isFetching } = adminApi.endpoints.variantsGet.useQuery(uid, { skip: !uid });
-  const [createVariant] = adminApi.endpoints.variantsCreate.useMutation();
+  const [createVariant] = adminApi.endpoints.variantCreate.useMutation();
   const [updateVariant] = adminApi.endpoints.variantUpdate.useMutation();
 
+  const price = toAmount(Form.useWatch('price', form));
+  const strikePrice = toAmount(Form.useWatch('strike_price', form));
+
   useEffect(() => {
+    setFormError(null);
     if (isEdit && full) {
-      form.setFieldsValue({
-        series_id: full.series_id,
-        badge_id: full.badge_id ?? undefined,
-        name: full.name,
-        description: full.description ?? '',
-        thumbnail_s3_key: full.thumbnail_s3_key ?? undefined,
-        likes_count: full.likes_count ?? 0,
-        display_order: full.display_order ?? 0,
-        is_active: isTrue(full.is_active),
-      });
+      form.setFieldsValue(detailValuesFrom(full));
     } else if (!isEdit) {
       form.resetFields();
-      form.setFieldsValue({
-        is_active: true,
-        likes_count: 0,
-        display_order: 0,
-        series_id: defaultSeriesId ?? undefined,
-      });
+      form.setFieldsValue(detailValuesFrom(null, defaultSeriesId));
     }
   }, [isEdit, full, defaultSeriesId, form]);
 
   const seriesOptions = (seriesList || []).map((s) => ({ label: s.name, value: s.id }));
   const badgeOptions = (badges || []).map((b) => ({ label: b.name, value: b.id }));
+
+  const save = async (body) => {
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      if (isEdit) {
+        await updateVariant({ uid, body }).unwrap();
+        message.success('Details saved');
+        onSaved?.();
+      } else {
+        const created = await createVariant(body).unwrap();
+        message.success('Variant created — now assign its designs');
+        onCreated?.(created.uid);
+      }
+    } catch (err) {
+      setFormError(applyPackServerError(form, err, DETAIL_FIELDS));
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const handleSubmit = async () => {
     let values;
@@ -150,37 +226,41 @@ function DetailsForm({ uid, defaultSeriesId, onCreated, onSaved }) {
     } catch {
       return;
     }
-    const description = values.description?.trim();
-    const body = {
-      series_id: values.series_id,
-      badge_id: values.badge_id ?? null,
-      name: values.name.trim(),
-      description: description ? description : null,
-      thumbnail_s3_key: values.thumbnail_s3_key ?? null,
-      likes_count: values.likes_count ?? 0,
-      display_order: values.display_order ?? 0,
-      is_active: values.is_active ? 1 : 0,
-    };
-    setSubmitting(true);
-    try {
-      if (isEdit) {
-        await updateVariant({ uid, body }).unwrap();
-        message.success('Details saved');
-        onSaved?.();
-      } else {
-        const created = await createVariant(body).unwrap();
-        message.success('Variant created — now choose which plans can access it');
-        onCreated?.(created.uid);
-      }
-    } catch {
-      // error notification handled by baseQuery
-    } finally {
-      setSubmitting(false);
+    const next = detailBodyFrom(values);
+    if (!isEdit) {
+      // Create: an unset price simply isn't for sale — no need to send nulls.
+      if (next.price === null) delete next.price;
+      if (next.strike_price === null) delete next.strike_price;
+      await save(next);
+      return;
     }
+
+    // PATCH is partial: send only what moved.
+    const before = detailBodyFrom(detailValuesFrom(full));
+    const body = {};
+    for (const key of Object.keys(next)) {
+      if (next[key] !== before[key]) body[key] = next[key];
+    }
+    if (Object.keys(body).length === 0) {
+      message.info('Nothing to save — no fields changed.');
+      return;
+    }
+
+    if (body.is_active === 0) {
+      modal.confirm({
+        title: 'Deactivate this variant?',
+        content: DEACTIVATE_EXPLAINER,
+        okText: 'Deactivate',
+        onOk: () => save(body),
+      });
+      return;
+    }
+    await save(body);
   };
 
   return (
     <Spin spinning={isEdit && isFetching}>
+      {formError && <Alert type="error" showIcon style={{ marginBottom: 16 }} message={formError} />}
       <Form form={form} layout="vertical">
         <Form.Item
           name="name"
@@ -223,6 +303,47 @@ function DetailsForm({ uid, defaultSeriesId, onCreated, onSaved }) {
 
         <Space size="large" align="start" wrap>
           <Form.Item
+            name="price"
+            label="Price (excl. GST)"
+            rules={[moneyRule]}
+            extra={
+              price !== null
+                ? `Customer pays ₹${(price * 1.18).toFixed(2)} incl. GST`
+                : 'Empty = not for sale.'
+            }
+          >
+            <InputNumber min={0} precision={2} prefix="₹" style={{ width: 200 }} placeholder="—" />
+          </Form.Item>
+
+          <Form.Item
+            name="strike_price"
+            label="Strike-through price"
+            rules={[moneyRule]}
+            extra="Display only — the “was” figure struck out beside the price."
+          >
+            <InputNumber min={0} precision={2} prefix="₹" style={{ width: 200 }} placeholder="—" />
+          </Form.Item>
+        </Space>
+
+        {price !== null && strikePrice !== null && strikePrice <= price && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="The strike-through price is not above the price, so it won’t read as a discount."
+          />
+        )}
+        {isEdit && full && toAmount(full.price) !== null && price === null && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Saving with no price takes this variant off sale. People who already bought it keep it."
+          />
+        )}
+
+        <Space size="large" align="start" wrap>
+          <Form.Item
             name="likes_count"
             label="Likes (❤️)"
             tooltip="The heart figure on the variant card"
@@ -234,7 +355,12 @@ function DetailsForm({ uid, defaultSeriesId, onCreated, onSaved }) {
             <InputNumber min={0} style={{ width: 160 }} />
           </Form.Item>
 
-          <Form.Item name="is_active" label="Active" valuePropName="checked">
+          <Form.Item
+            name="is_active"
+            label="Active"
+            valuePropName="checked"
+            tooltip={DEACTIVATE_EXPLAINER}
+          >
             <Switch />
           </Form.Item>
         </Space>
@@ -245,72 +371,6 @@ function DetailsForm({ uid, defaultSeriesId, onCreated, onSaved }) {
           </Button>
         </div>
       </Form>
-    </Spin>
-  );
-}
-
-// ---- Plans (Access) — premium entitlement ----------------------------------
-
-function PlansPanel({ uid }) {
-  const { message } = App.useApp();
-  const { data: relations, isFetching } = adminApi.endpoints.variantRelations.useQuery(uid, {
-    skip: !uid,
-  });
-  const { data: plans } = adminApi.endpoints.plansList.useQuery();
-  const [setRelations, { isLoading: saving }] =
-    adminApi.endpoints.variantSetRelations.useMutation();
-
-  const [value, setValue] = useState([]);
-
-  useEffect(() => {
-    if (relations) setValue((relations.Plans || []).map((p) => p.id));
-  }, [relations]);
-
-  const options = (plans || []).map((p) => ({ label: p.name, value: p.id }));
-
-  const save = async () => {
-    try {
-      // Per-key full replace: only plan_ids is sent, so industries are left
-      // untouched. An empty array clears the entitlement.
-      await setRelations({ uid, body: { plan_ids: value } }).unwrap();
-      message.success('Plan access saved');
-    } catch {
-      // error notification handled by baseQuery
-    }
-  };
-
-  const empty = value.length === 0;
-
-  return (
-    <Spin spinning={isFetching}>
-      <Space direction="vertical" style={{ width: '100%' }} size={14}>
-        <Alert
-          type={empty ? 'warning' : 'info'}
-          showIcon
-          message="Plan entitlement is the premium access control"
-          description={
-            empty
-              ? 'A variant with no plans selected is locked to everyone — pick at least one plan to make it accessible. The plans you select make this variant’s templates available to subscribers on those plans (and let them add it to their business).'
-              : 'The plans below make this variant’s templates available to subscribers on those plans (and let them add it to their business). Clear all plans to lock the variant to everyone.'
-          }
-        />
-        <div>
-          <Text type="secondary">Entitled plans</Text>
-          <Select
-            mode="multiple"
-            allowClear
-            style={{ width: '100%', marginTop: 4 }}
-            value={value}
-            onChange={setValue}
-            options={options}
-            optionFilterProp="label"
-            placeholder="Select the plans that can access this variant"
-          />
-        </div>
-        <Button type="primary" loading={saving} onClick={save}>
-          Save plan access
-        </Button>
-      </Space>
     </Spin>
   );
 }
@@ -339,11 +399,12 @@ function BusinessPanel({ uid }) {
   const save = async () => {
     try {
       // Per-key full replace: only industry_ids is sent (renamed from the
-      // deprecated business_category_ids), so the plan entitlement is untouched.
+      // deprecated business_category_ids). Never plan_ids — deprecated, ignored.
       await setRelations({ uid, body: { industry_ids: value } }).unwrap();
       message.success('Industries saved');
-    } catch {
-      // error notification handled by baseQuery
+    } catch (err) {
+      // Silent endpoint — surface the server's message ourselves.
+      message.error(err?.message || 'Could not save the industries.');
     }
   };
 
@@ -351,8 +412,9 @@ function BusinessPanel({ uid }) {
     <Spin spinning={isFetching}>
       <Space direction="vertical" style={{ width: '100%' }} size={14}>
         <Paragraph type="secondary" style={{ margin: 0 }}>
-          Display/filter tags only — these do <Text strong>not</Text> control access. Use the Plans
-          tab for that.
+          Display/filter tags only — these do <Text strong>not</Text> control access. Every variant
+          is shown to everyone; users unlock it by adding it to their business while subscribed, or
+          by buying it.
         </Paragraph>
         <div>
           <Text type="secondary">Industries</Text>
@@ -461,8 +523,7 @@ function TemplatesPanel({ uid }) {
       <Space direction="vertical" style={{ width: '100%' }} size={14}>
         <Paragraph type="secondary" style={{ margin: 0 }}>
           The designs assigned to this variant (full replace) — every language and size of a design
-          comes with it. These become available to subscribers on the variant’s entitled plans.
-          Only <Text strong>active</Text> designs can be picked — an already-assigned design that
+          comes with it. Users who added or bought this variant get these designs. Only <Text strong>active</Text> designs can be picked — an already-assigned design that
           was since deactivated stays listed with its status so you can remove it deliberately.
         </Paragraph>
         <div>
