@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Table,
   Typography,
@@ -10,6 +11,7 @@ import {
   Tooltip,
   Popover,
   Alert,
+  Checkbox,
   App,
 } from 'antd';
 import {
@@ -21,6 +23,7 @@ import {
   HolderOutlined,
   CloudUploadOutlined,
   EyeInvisibleOutlined,
+  MergeCellsOutlined,
 } from '@ant-design/icons';
 import { useAppDispatch } from '../app/hooks';
 import {
@@ -36,25 +39,80 @@ import {
   PREMIUM_OPTIONS,
   STATUS_COLORS,
   STATUS_OPTIONS,
+  chipText,
   formatPrice,
   isTrue,
   rowReadiness,
   statusLabel,
   toAmount,
 } from '../lib/frames';
+import { TEXT_FREE_LABEL, languageLabel, num, sizeLabel } from '../lib/templateFamilies';
 import ImageThumb from '../components/ImageThumb';
-import FrameEditorDrawer from '../components/FrameEditorDrawer';
+import { MergeFrameModal } from '../components/FrameMoveModals';
 
 const { Title, Text } = Typography;
 
 const SEARCH_DEBOUNCE_MS = 400;
+const MAX_CHIPS = 3;
 
 const EMPTY_FILTERS = {
   status: undefined,
   category_id: undefined,
   frame_type: undefined,
   is_premium: undefined,
+  single_version: undefined,
 };
+
+/** Up to MAX_CHIPS tags, the rest folded into a "+n" with the full list on hover. */
+function Chips({ items, color }) {
+  if (!items.length) return null;
+  const shown = items.slice(0, MAX_CHIPS);
+  const rest = items.slice(MAX_CHIPS);
+  return (
+    <span>
+      {shown.map((t) => (
+        <Tag key={t} color={color} style={{ marginBottom: 2 }}>
+          {t}
+        </Tag>
+      ))}
+      {rest.length > 0 && (
+        <Tooltip title={rest.join(', ')}>
+          <Tag style={{ marginBottom: 2 }}>+{rest.length}</Tag>
+        </Tooltip>
+      )}
+    </span>
+  );
+}
+
+/** Language (or Text-free) and size chips + "live of total" versions. */
+function CoverageCell({ row }) {
+  const languages = (Array.isArray(row.languages) ? row.languages : [])
+    .map((l) => chipText(l, languageLabel))
+    .filter(Boolean);
+  const sizes = (Array.isArray(row.sizes) ? row.sizes : [])
+    .map((s) => chipText(s, sizeLabel))
+    .filter(Boolean);
+  const versions = num(row.version_count);
+  const live = num(row.active_version_count);
+  if (!versions) return <Text type="warning">No versions</Text>;
+  return (
+    <div style={{ maxWidth: 320 }}>
+      <div>
+        {isTrue(row.text_free) ? (
+          <Tag color="purple">{TEXT_FREE_LABEL}</Tag>
+        ) : (
+          <Chips items={languages} color="blue" />
+        )}
+      </div>
+      <div>
+        <Chips items={sizes} />
+      </div>
+      <Text type="secondary" style={{ fontSize: 12 }}>
+        {live} of {versions} version{versions === 1 ? '' : 's'} live
+      </Text>
+    </div>
+  );
+}
 
 function moveItem(arr, from, to) {
   const next = [...arr];
@@ -65,7 +123,7 @@ function moveItem(arr, from, to) {
 
 function MissingThumb() {
   return (
-    <Tooltip title="No thumbnail — upload one on the frame's Details tab">
+    <Tooltip title="No thumbnail — open the frame and upload a version's bundle">
       <div
         style={{
           width: 40,
@@ -96,9 +154,14 @@ function MissingThumb() {
  * display_order to array position FOR THE SUBMITTED UIDS ONLY, so sending one
  * page — or a filtered view — hands those rows positions that collide with the
  * rows it left out.
+ *
+ * Each row is a frame FAMILY (versions per language × size). "Single-version
+ * only" + Merge is the clean-up path for size copies that were uploaded as
+ * separate frames.
  */
 export default function FramesPage() {
   const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   const perms = usePermissions();
   const { message, modal } = App.useApp();
 
@@ -111,7 +174,7 @@ export default function FramesPage() {
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [editor, setEditor] = useState({ open: false, uid: null });
+  const [mergeFor, setMergeFor] = useState(null);
   const [statusUid, setStatusUid] = useState(null);
   const [reordering, setReordering] = useState(false);
   const [dragIndex, setDragIndex] = useState(null);
@@ -135,6 +198,8 @@ export default function FramesPage() {
       category_id: filters.category_id,
       frame_type: filters.frame_type,
       is_premium: filters.is_premium,
+      // 1 or omitted — never 0.
+      single_version: filters.single_version ? 1 : undefined,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     }),
@@ -236,7 +301,7 @@ export default function FramesPage() {
     modal.confirm({
       title: `Delete "${record.name}"?`,
       content:
-        'Hard delete, and it cannot be undone. If anyone owns this frame the database will refuse — retire it instead.',
+        'Hard delete of the frame and every one of its versions — it cannot be undone. If anyone owns this frame the database will refuse — retire it instead.',
       okText: 'Delete',
       okButtonProps: { danger: true },
       onOk: async () => {
@@ -286,7 +351,11 @@ export default function FramesPage() {
       title: 'Name',
       dataIndex: 'name',
       key: 'name',
-      render: (v) => <Text strong>{v}</Text>,
+      render: (v, r) => (
+        <Button type="link" style={{ padding: 0, fontWeight: 600 }} onClick={() => navigate(`/frames/${r.uid}`)}>
+          {v}
+        </Button>
+      ),
     },
     {
       title: 'Category',
@@ -330,6 +399,11 @@ export default function FramesPage() {
       },
     },
     {
+      title: 'Versions',
+      key: 'coverage',
+      render: (_v, r) => <CoverageCell row={r} />,
+    },
+    {
       title: 'Status',
       dataIndex: 'status',
       key: 'status',
@@ -365,7 +439,7 @@ export default function FramesPage() {
     columns.push({
       title: 'Actions',
       key: 'actions',
-      width: 140,
+      width: 170,
       fixed: 'right',
       render: (_v, record) => {
         const { ready, missing } = rowReadiness(record);
@@ -375,7 +449,7 @@ export default function FramesPage() {
               <Button
                 size="small"
                 icon={<EditOutlined />}
-                onClick={() => setEditor({ open: true, uid: record.uid })}
+                onClick={() => navigate(`/frames/${record.uid}`)}
                 title="Edit"
               />
             )}
@@ -404,6 +478,15 @@ export default function FramesPage() {
                   />
                 </Tooltip>
               ))}
+            {canUpdate && (
+              <Tooltip title="Merge into another frame — e.g. the same design in another size">
+                <Button
+                  size="small"
+                  icon={<MergeCellsOutlined />}
+                  onClick={() => setMergeFor(record)}
+                />
+              </Tooltip>
+            )}
             {canDelete && (
               <Button
                 size="small"
@@ -442,7 +525,7 @@ export default function FramesPage() {
             <Button
               type="primary"
               icon={<PlusOutlined />}
-              onClick={() => setEditor({ open: true, uid: null })}
+              onClick={() => navigate('/frames/new')}
             >
               New Frame
             </Button>
@@ -460,6 +543,15 @@ export default function FramesPage() {
             ? 'Drag the rows to set the order the store shows them in — each change saves automatically.'
             : dragBlockedReason
         }
+      />
+
+      <Alert
+        type="warning"
+        showIcon
+        closable
+        style={{ marginBottom: 16 }}
+        message="Frames now have versions — one per language and size"
+        description="Every existing frame was migrated to ONE text-free version in the default size. If a frame’s text is in a language, open it and use the version’s “Change language / size…”. Size copies uploaded as separate frames: tick “Single-version only” and merge each into its main frame."
       />
 
       <Space wrap style={{ marginBottom: 16 }}>
@@ -504,6 +596,14 @@ export default function FramesPage() {
           onChange={(v) => setFilter('is_premium', v)}
           options={PREMIUM_OPTIONS}
         />
+        <Tooltip title="Frames with exactly one version — size copies to merge are usually here.">
+          <Checkbox
+            checked={Boolean(filters.single_version)}
+            onChange={(e) => setFilter('single_version', e.target.checked || undefined)}
+          >
+            Single-version only
+          </Checkbox>
+        </Tooltip>
       </Space>
 
       <Table
@@ -516,7 +616,7 @@ export default function FramesPage() {
         locale={{
           emptyText: filtersActive
             ? 'No frames match.'
-            : 'No frames yet — create one, upload its thumbnail and design, then publish it.',
+            : 'No frames yet — create one, upload an English or text-free version’s bundle, then publish it.',
         }}
         pagination={{
           current: page,
@@ -561,11 +661,11 @@ export default function FramesPage() {
         })}
       />
 
-      <FrameEditorDrawer
-        open={editor.open}
-        uid={editor.uid}
-        onClose={() => setEditor({ open: false, uid: null })}
-        onSaved={refetch}
+      <MergeFrameModal
+        open={Boolean(mergeFor)}
+        frame={mergeFor}
+        onClose={() => setMergeFor(null)}
+        onMerged={() => setMergeFor(null)}
       />
     </div>
   );

@@ -9,7 +9,13 @@
  * for its own price. A subscription plan never unlocks one, and there is no
  * frames↔plans relationship in the API — by design. Free or individually paid,
  * nothing in between.
+ *
+ * Like a template design, a frame is a FAMILY of versions — one per language
+ * (or text-free) × template size. The frame keeps the shared fields; each
+ * version carries its own `content`, `thumbnail_s3_key` and `status`.
  */
+
+import { isTextFree } from './templateFamilies';
 
 // The API returns flags as 1/0, "1"/"0" or true/false depending on the endpoint.
 export const isTrue = (v) => v === true || v === 1 || v === '1';
@@ -86,20 +92,6 @@ const REQUIREMENTS = [
     test: (f) => f?.category_id !== null && f?.category_id !== undefined && f?.category_id !== '',
   },
   {
-    key: 'content',
-    field: 'content',
-    label: 'Design payload',
-    hint: 'Paste the frame design into the Content field.',
-    test: (f) => Boolean(f?.content && String(f.content).trim()),
-  },
-  {
-    key: 'thumbnail',
-    field: 'thumbnail_s3_key',
-    label: 'Thumbnail',
-    hint: 'Upload the thumbnail users see in the store.',
-    test: (f) => Boolean(f?.thumbnail_s3_key),
-  },
-  {
     key: 'pricing',
     field: 'price',
     label: 'Price matches the premium switch',
@@ -109,7 +101,24 @@ const REQUIREMENTS = [
       return isTrue(f?.is_premium) ? price > 0 : price === 0;
     },
   },
+  {
+    key: 'versions',
+    field: 'versions',
+    label: 'Active English (or text-free) version, in any size',
+    hint: 'Publish an English or text-free version on the Versions tab — it needs content and a thumbnail.',
+    test: (f) => (f?.versions || []).some(isGateVersion),
+  },
 ];
+
+/** English is the language whose code is `en` (case-insensitive). */
+export const isEnglish = (language) => String(language?.code || '').toLowerCase() === 'en';
+
+/**
+ * Whether a version counts towards the frame publish gate: active, and
+ * English or text-free. Any size counts.
+ */
+export const isGateVersion = (v) =>
+  v?.status === 'active' && (isTextFree(v) || isEnglish(v.Language));
 
 // server `details[].field` → requirement key. `is_premium` maps to the same row
 // as `price`: the two are one rule, and the server may blame either side of it.
@@ -120,7 +129,7 @@ export const FIELD_TO_KEY = {
 
 /**
  * Evaluate every publish requirement against a full frame record
- * (GET /admin/frames/:uid — the LIST omits `content`, so never pass a list row).
+ * (GET /admin/frames/:uid, which carries `versions[]` with their Language).
  *
  * Returns `complete: false` while the record is still loading, so a publish
  * button bound to it never flashes enabled before the data lands.
@@ -141,9 +150,9 @@ export function checkFrameCompleteness(full) {
 /**
  * Readiness for a LIST row. Rows carry `is_publishable` (a real boolean) and
  * `missing_for_publish` ([{ field, message }]) computed by the same server code
- * path as the gate, so nothing is re-derived here — but `has_content` /
- * `has_thumbnail` are 1/0 integers, and a row from an older payload may carry
- * neither flag, so fall back to the local rules rather than claiming "Ready".
+ * path as the gate, so nothing is re-derived here. A row without the flag falls
+ * back to the local rules, using `has_required_version` for the versions row —
+ * never claiming "Ready" on a guess.
  */
 export function rowReadiness(row) {
   if (typeof row?.is_publishable === 'boolean') {
@@ -152,12 +161,27 @@ export function rowReadiness(row) {
   }
   const { missing } = checkFrameCompleteness({
     ...row,
-    // The list omits `content`; `has_content` is its 1/0 stand-in.
-    content: isTrue(row?.has_content) ? 'x' : '',
-    thumbnail_s3_key: isTrue(row?.has_thumbnail) ? row?.thumbnail_s3_key || 'x' : '',
+    versions: isTrue(row?.has_required_version) ? [{ status: 'active', language_id: null }] : [],
   });
   return { ready: missing.length === 0, missing: missing.map((m) => m.hint) };
 }
+
+/**
+ * A list row's `languages[]` / `sizes[]` entries — objects (Language /
+ * TemplateSize shaped) or plain strings, whichever the API sends.
+ */
+export const chipText = (x, labelFn) =>
+  typeof x === 'string' || typeof x === 'number' ? String(x) : labelFn(x) || x?.code || x?.slug || '';
+
+/** What the move/merge dry-run says happens to the source frame. */
+export const OUTCOME_TEXT = {
+  unchanged: { color: 'default', text: 'stays as it is' },
+  draft: {
+    color: 'gold',
+    text: 'goes back to draft — it loses the version it needed to stay live',
+  },
+  archived: { color: 'red', text: 'has no versions left, so it is archived' },
+};
 
 /**
  * Push a backend validation/conflict error onto a frame form. Returns the text

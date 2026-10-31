@@ -9,6 +9,7 @@ import AdminsPage from './pages/AdminsPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TemplateFamilyPage from './pages/TemplateFamilyPage';
 import FramesPage from './pages/FramesPage';
+import FramePage from './pages/FramePage';
 import FrameCategoriesPage from './pages/FrameCategoriesPage';
 import QuotaPacksPage from './pages/QuotaPacksPage';
 import HomepageCategoriesPage from './pages/HomepageCategoriesPage';
@@ -95,6 +96,15 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="frames">
               <FramesPage />
+            </RequirePermission>
+          }
+        />
+        {/* One frame and its version grid; `new` creates one. */}
+        <Route
+          path="frames/:uid"
+          element={
+            <RequirePermission domain="frames">
+              <FramePage />
             </RequirePermission>
           }
         />

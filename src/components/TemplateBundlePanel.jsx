@@ -21,6 +21,7 @@ import {
 import JSZip from 'jszip';
 import { adminApi } from '../features/api/adminApi';
 import { uploadErrorText, uploadFile, uploadSingle } from '../lib/assetUpload';
+import { TEMPLATE_VERSIONS, parentArgs } from '../lib/versionKinds';
 import ImageThumb from './ImageThumb';
 
 const { Text, Paragraph } = Typography;
@@ -50,15 +51,15 @@ const ASSETS_DIR_RE = /(^|\/)assets\//i;
 const THUMB_ACCEPT = 'image/png,image/jpeg,image/webp,image/svg+xml';
 const THUMB_MAX_MB = 5;
 
-const EXPECTED_STRUCTURE = `template-bundle.zip
-├─ template.json      ← exactly one .json file, in the ZIP root
-├─ thumbnail.jpg      ← .jpg / .png / .webp — used as the card cover
-└─ assets/
+const expectedStructure = (kind) => `${kind.zipName}
+├─ ${kind.documentName.padEnd(17)}← exactly one .json file, in the ZIP root
+├─ thumbnail.jpg    ← .jpg / .png / .webp — used as the card cover
+└─ assets/          ← everything else (incl. Lottie .json / videos)
    ├─ background.png
    ├─ logo.svg
    └─ Inter-Bold.woff2`;
 
-// Files are flattened to their basename under templates/<uid>/, so two entries
+// Files are flattened to their basename under <folder>/<uid>/, so two entries
 // sharing a basename (case-insensitive) would overwrite each other on S3.
 function duplicateBasenames(list) {
   const counts = new Map();
@@ -83,7 +84,7 @@ function commonRoot(list) {
  * Convention checks — every one of these is a warning, never a blocker: the
  * server flattens the ZIP anyway, so layout only matters for humans.
  */
-function structureWarnings(list, contentEntry) {
+function structureWarnings(list, contentEntry, kind) {
   const root = commonRoot(list);
   const rel = (p) => (root && p.startsWith(root) ? p.slice(root.length) : p);
   const atRoot = (p) => !rel(p).includes('/');
@@ -91,7 +92,7 @@ function structureWarnings(list, contentEntry) {
 
   if (!atRoot(contentEntry.path)) {
     warnings.push(
-      `The template document "${contentEntry.name}" is not in the ZIP root (found at ${contentEntry.path}). It still uploads, but the convention is one .json at the root.`,
+      `The ${kind.documentLabel} "${contentEntry.name}" is not in the ZIP root (found at ${contentEntry.path}). It still uploads, but the convention is one .json at the root.`,
     );
   }
 
@@ -99,7 +100,7 @@ function structureWarnings(list, contentEntry) {
   const images = list.filter((e) => IMAGE_RE.test(e.name));
   if (images.length === 0) {
     warnings.push(
-      'This ZIP contains no image — the template cannot be published without a thumbnail. Add thumbnail.jpg (or .png / .webp) to the ZIP root.',
+      'This ZIP contains no image — the version cannot be published without a thumbnail. Add thumbnail.jpg (or .png / .webp) to the ZIP root, or use “Replace thumbnail only” afterwards.',
     );
   } else if (!rootThumb) {
     warnings.push(
@@ -125,7 +126,7 @@ function structureWarnings(list, contentEntry) {
   return warnings;
 }
 
-function StructureGuide() {
+function StructureGuide({ kind }) {
   return (
     <Collapse
       ghost
@@ -149,12 +150,12 @@ function StructureGuide() {
                   overflowX: 'auto',
                 }}
               >
-                {EXPECTED_STRUCTURE}
+                {expectedStructure(kind)}
               </pre>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Every file is stored flat under <Text code>templates/&lt;uid&gt;/</Text>, so folders are
-                a convention only — but <Text strong>every filename must be unique</Text> across the
-                whole ZIP, otherwise files overwrite each other.
+                Every file is stored flat under <Text code>{kind.folder('<uid>')}</Text>, so folders
+                are a convention only — but <Text strong>every filename must be unique</Text> across
+                the whole ZIP, otherwise files overwrite each other.
               </Text>
             </Space>
           ),
@@ -166,14 +167,14 @@ function StructureGuide() {
 
 /**
  * Replace only the thumbnail, without re-uploading the whole ZIP. The image is
- * PUT to templates/<uid>/<name> via the same template_file presign target, then
+ * PUT into the version's folder via the same bundle-file presign target, then
  * bundle/confirm is called with only `thumbnail_filename` (content omitted, so
- * the saved template document is left untouched).
+ * the saved document is left untouched).
  */
-function ThumbnailReplace({ uid, familyUid, onDone }) {
+function ThumbnailReplace({ kind, uid, familyUid, onDone }) {
   const { message } = App.useApp();
   const [presign] = adminApi.endpoints.uploadPresign.useMutation();
-  const [bundleConfirm] = adminApi.endpoints.templateBundleConfirm.useMutation();
+  const [bundleConfirm] = adminApi.endpoints[kind.endpoints.bundleConfirm].useMutation();
   const [busy, setBusy] = useState(false);
 
   const beforeUpload = (file) => {
@@ -192,8 +193,12 @@ function ThumbnailReplace({ uid, familyUid, onDone }) {
     setBusy(true);
     try {
       // No uploads/confirm here — bundle/confirm finalizes the object.
-      await uploadSingle({ file, target: { type: 'template_file', template_uid: uid }, presign });
-      await bundleConfirm({ uid, familyUid, thumbnail_filename: file.name }).unwrap();
+      await uploadSingle({ file, target: kind.fileTarget(uid), presign });
+      await bundleConfirm({
+        uid,
+        ...parentArgs(kind, familyUid),
+        thumbnail_filename: file.name,
+      }).unwrap();
       onSuccess?.({}, file);
       message.success('Thumbnail updated');
       onDone?.();
@@ -231,20 +236,24 @@ function ThumbnailReplace({ uid, familyUid, onDone }) {
 
 /**
  * Bundle ingest: unzip the designer ZIP in the browser, upload each file direct
- * to S3 under templates/<uid>/ (single or multipart by size, NO per-file
+ * to S3 under the version's folder (single or multipart by size, NO per-file
  * confirm), then POST bundle/confirm with the parsed content JSON + the chosen
  * thumbnail filename — which flips all the objects pending→active server-side.
  *
  * The thumbnail is admin-chosen from any image in the ZIP; `thumbnail.*` at the
  * root is only the default. The ZIP filename itself is never sent to the server
  * (only its extracted files are), so the post-upload summary is session-local.
+ *
+ * Shared by template and frame versions via `kind` (lib/versionKinds).
  */
-// `uid` is the VERSION uid (bundles belong to versions); `familyUid` is only
-// passed through so confirm/reset refetch the design as well.
+// `uid` is the VERSION uid (bundles belong to versions); `familyUid` is the
+// parent (design or frame) uid, only passed through so confirm/reset refetch it.
 export default function TemplateBundlePanel({
+  kind = TEMPLATE_VERSIONS,
   uid,
   familyUid,
   thumbnailKey,
+  thumbnailVersion,
   hasContent,
   onConfirmed,
 }) {
@@ -254,8 +263,10 @@ export default function TemplateBundlePanel({
   const [presignParts] = adminApi.endpoints.multipartPresignParts.useMutation();
   const [complete] = adminApi.endpoints.multipartComplete.useMutation();
   const [abortMultipart] = adminApi.endpoints.multipartAbort.useMutation();
-  const [bundleConfirm] = adminApi.endpoints.templateBundleConfirm.useMutation();
-  const [bundleReset] = adminApi.endpoints.templateBundleReset.useMutation();
+  // `kind` is fixed for a mounted panel, so the hook order never changes.
+  const [bundleConfirm] = adminApi.endpoints[kind.endpoints.bundleConfirm].useMutation();
+  const [bundleReset] = adminApi.endpoints[kind.endpoints.bundleReset].useMutation();
+  const folder = kind.folder(uid);
 
   const [zip, setZip] = useState(null);
   const [zipName, setZipName] = useState(null);
@@ -337,23 +348,23 @@ export default function TemplateBundlePanel({
       // Expect exactly one JSON — that single file is the template document.
       const jsons = list.filter((e) => e.name.toLowerCase().endsWith('.json'));
       if (jsons.length === 0) {
-        return resetSelection('No .json file found — the template document is required.');
+        return resetSelection(`No .json file found — the ${kind.documentLabel} is required.`);
       }
       if (jsons.length > 1) {
         return resetSelection(
-          `Expected exactly one .json (the template document) but found ${jsons.length}: ${jsons
+          `Expected exactly one .json (the ${kind.documentLabel}) but found ${jsons.length}: ${jsons
             .map((j) => j.name)
             .join(', ')}.`,
         );
       }
 
-      // No two files may flatten to the same name under templates/<uid>/.
+      // No two files may flatten to the same name in the version's folder.
       const dupes = duplicateBasenames(list);
       if (dupes.length) {
         return resetSelection(
           `Duplicate file name(s) in the ZIP: ${dupes.join(
             ', ',
-          )}. Every file must have a unique name (they are stored flat under templates/<uid>/).`,
+          )}. Every file must have a unique name (they are stored flat under ${folder}).`,
         );
       }
 
@@ -366,7 +377,7 @@ export default function TemplateBundlePanel({
       setEntries(list);
       setContentPath(jsons[0].path); // the lone JSON is the content doc
       setThumbPath(thumb?.path);
-      setWarnings(structureWarnings(list, jsons[0]));
+      setWarnings(structureWarnings(list, jsons[0], kind));
       setLastUpload(null);
       setPhase('ready');
       return false;
@@ -378,7 +389,7 @@ export default function TemplateBundlePanel({
 
   const startUpload = async () => {
     if (!contentPath) {
-      message.error('No template document detected — re-select the ZIP.');
+      message.error(`No ${kind.documentLabel} detected — re-select the ZIP.`);
       return;
     }
     cancelRef.current = false;
@@ -401,7 +412,7 @@ export default function TemplateBundlePanel({
         const f = new File([blob], e.name, { type: guessType(e.name) });
         setProgress({ pct: Math.round((i / total) * 100), current: `${e.name} (${i + 1}/${total})` });
 
-        const target = { type: 'template_file', template_uid: uid };
+        const target = kind.fileTarget(uid);
         const onProgress = (p) =>
           setProgress((pr) => ({ ...pr, pct: Math.round(((i + p) / total) * 100) }));
         // Multipart PUTs several parts at once — keep every handle for cancel.
@@ -434,7 +445,7 @@ export default function TemplateBundlePanel({
       }
       await bundleConfirm({
         uid,
-        familyUid,
+        ...parentArgs(kind, familyUid),
         content: contentStr,
         thumbnail_filename: thumbPath ? basename(thumbPath) : undefined,
       }).unwrap();
@@ -480,15 +491,20 @@ export default function TemplateBundlePanel({
   const onReset = () => {
     modal.confirm({
       title: 'Reset bundle?',
-      content: `This wipes every file under templates/${uid}/ so you can re-upload cleanly.`,
+      content: `This wipes every file under ${folder} so you can re-upload cleanly.${kind.resetNote}`,
       okText: 'Reset',
       okButtonProps: { danger: true },
       onOk: async () => {
         try {
-          await bundleReset({ uid, familyUid }).unwrap();
+          const res = await bundleReset({ uid, ...parentArgs(kind, familyUid) }).unwrap();
           clearSelection();
           setLastUpload(null);
           message.success('Bundle reset');
+          if (res?.frame_drafted) {
+            message.warning(
+              `The ${kind.parent} lost its last live English / text-free version and went back to draft.`,
+            );
+          }
           onConfirmed?.();
         } catch (err) {
           // Silent endpoint — we own the messaging. A 409 means other versions
@@ -530,16 +546,18 @@ export default function TemplateBundlePanel({
         {thumbnailKey && (
           <Space>
             <Text type="secondary">Current thumbnail:</Text>
-            <ImageThumb k={thumbnailKey} size={40} />
+            <ImageThumb k={thumbnailKey} v={thumbnailVersion} size={40} />
           </Space>
         )}
-        {!uploading && <ThumbnailReplace uid={uid} familyUid={familyUid} onDone={onConfirmed} />}
+        {!uploading && (
+          <ThumbnailReplace kind={kind} uid={uid} familyUid={familyUid} onDone={onConfirmed} />
+        )}
         <Button size="small" icon={<ClearOutlined />} danger onClick={onReset} disabled={uploading}>
           Reset bundle
         </Button>
       </Space>
 
-      <StructureGuide />
+      <StructureGuide kind={kind} />
 
       <Paragraph type="secondary" style={{ margin: 0 }}>
         Upload the designer ZIP. It is unzipped in your browser; each file is sent straight to S3 and
@@ -603,7 +621,7 @@ export default function TemplateBundlePanel({
           <p className="ant-upload-drag-icon">
             <InboxOutlined />
           </p>
-          <p className="ant-upload-text">Click or drag the template ZIP here</p>
+          <p className="ant-upload-text">Click or drag the {kind.parent} ZIP here</p>
         </Upload.Dragger>
       )}
 
@@ -626,7 +644,7 @@ export default function TemplateBundlePanel({
             <Alert
               type="warning"
               showIcon
-              message="No template.json found in the ZIP — the bundle can't be confirmed without it."
+              message={`No ${kind.documentName} found in the ZIP — the bundle can't be confirmed without it.`}
             />
           )}
 

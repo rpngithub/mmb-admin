@@ -19,6 +19,7 @@ const SPECIAL_TAGS = [
   'Templates',
   'TemplateFamily',
   'Frames',
+  'FrameVersions',
   'BillingOptions',
   'PlanFeatures',
   'CouponPlans',
@@ -76,6 +77,31 @@ function versionChangeTags(familyUid) {
   }
   return tags;
 }
+
+/**
+ * Same idea for frames: a version change can drop a live frame to draft and
+ * changes the list's counts, chips, thumbnail and readiness.
+ */
+function frameVersionChangeTags(frameUid) {
+  const tags = [
+    { type: 'Frames', id: 'LIST' },
+    { type: 'FrameVersions', id: 'LIST' },
+  ];
+  if (frameUid) {
+    tags.push({ type: 'Frames', id: frameUid }, { type: 'Frames', id: `${frameUid}:versions` });
+  }
+  return tags;
+}
+
+/**
+ * A frame-version write can knock the whole frame back to draft; the API says
+ * so in the envelope (`meta.frame_drafted`). Hoist it onto the result so the
+ * caller can toast it.
+ */
+const withFrameDrafted = (data, meta) => ({
+  ...(data || {}),
+  frame_drafted: Boolean(meta?.envelope?.frame_drafted),
+});
 
 /**
  * Generate the five CRUD endpoints for every generic resource from its config,
@@ -576,10 +602,16 @@ export const adminApi = createApi({
     // + `price` are the whole access model — there is no frames↔plans link in the
     // API and a subscription never unlocks one.
     //
-    // The list omits `content` (and adds has_content / has_thumbnail 1|0,
-    // is_publishable boolean, missing_for_publish[{field,message}]), so the editor
-    // ALWAYS reads frameGet — binding a form to a list row would PATCH an empty
-    // design payload over a real one.
+    // A frame is a FAMILY: it keeps the shared fields (name, category, type,
+    // pricing, order, status) and its design lives on VERSIONS (one language —
+    // or text-free — × one template size). `content` / `thumbnail_s3_key` are a
+    // 400 on /admin/frames now.
+    //
+    // List rows add version_count / active_version_count (numbers OR strings),
+    // languages[], sizes[], text_free, thumbnail_s3_key (from a version),
+    // has_required_version, is_publishable, missing_for_publish[{field,message}].
+    // `single_version=1` narrows to merge candidates. GET adds versions[] (no
+    // content) with Language + TemplateSize.
     framesList: builder.query({
       query: (params = {}) => ({ url: '/admin/frames', params: cleanParams(params) }),
       transformResponse: (data, meta) => ({
@@ -611,16 +643,133 @@ export const adminApi = createApi({
         { type: 'Frames', id: 'LIST' },
       ],
     }),
-    // Hard delete, and silent on purpose: the database REFUSES to delete a frame
-    // any user owns (409 CONFLICT) so nobody loses something they paid for. The
-    // page turns that into the "retire it instead" route rather than a red toast.
+    // Hard delete (cascades every version), and silent on purpose: the database
+    // REFUSES to delete a frame any user owns (409 CONFLICT) so nobody loses
+    // something they paid for. The page turns that into the "retire it instead"
+    // route rather than a red toast.
     frameRemove: builder.mutation({
       query: (uid) => ({ url: `/admin/frames/${uid}`, method: 'DELETE' }),
       extraOptions: { silent: true },
       invalidatesTags: (_r, _e, uid) => [
         { type: 'Frames', id: uid },
         { type: 'Frames', id: 'LIST' },
+        { type: 'FrameVersions', id: 'LIST' },
       ],
+    }),
+    // Merge a whole frame into another. `dryRun` returns the plan { source
+    // {uid,name,outcome,versions}, target, changes[], owners{carried,combined,
+    // dropped}, conflicts[] } and writes nothing; applying with conflicts → 409.
+    frameMerge: builder.mutation({
+      query: ({ uid, into_frame_uid, dryRun }) => ({
+        url: `/admin/frames/${uid}/merge`,
+        method: 'POST',
+        params: dryRun ? { dry_run: 1 } : undefined,
+        body: { into_frame_uid },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, error, { uid, into_frame_uid, dryRun }) =>
+        error || dryRun
+          ? []
+          : [...frameVersionChangeTags(uid), ...frameVersionChangeTags(into_frame_uid)],
+    }),
+
+    // ---- Frame versions (one language-or-text-free × one size) -------------
+    // Rows: uid, status, language_id, size_id, thumbnail_s3_key, updated_at,
+    // Frame, Language, TemplateSize, has_content, has_thumbnail — no `content`.
+    // Every mutation takes `frameUid` because any version change can move the
+    // frame's status.
+    frameVersionsByFrame: builder.query({
+      query: (frameUid) => ({
+        url: '/admin/frame-versions',
+        params: { frame_uid: frameUid, limit: 100 },
+      }),
+      transformResponse: (data) => data || [],
+      providesTags: (result, _e, frameUid) => [
+        ...(result || []).map((v) => ({ type: 'FrameVersions', id: v.uid })),
+        { type: 'Frames', id: `${frameUid}:versions` },
+        { type: 'FrameVersions', id: 'LIST' },
+      ],
+    }),
+    frameVersionGet: builder.query({
+      query: (uid) => ({ url: `/admin/frame-versions/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'FrameVersions', id: uid }],
+    }),
+    // Body: { frame_id (numeric), language_id (id | null = text-free), size_id,
+    // content?, thumbnail_s3_key?, status? }. 409 = slot taken; 400 = mixing
+    // text-free with languages, or the version publish gate (content /
+    // thumbnail_s3_key / size_id).
+    frameVersionCreate: builder.mutation({
+      query: ({ body }) => ({ url: '/admin/frame-versions', method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { frameUid }) => frameVersionChangeTags(frameUid),
+    }),
+    frameVersionUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `/admin/frame-versions/${uid}`, method: 'PATCH', body }),
+      transformResponse: withFrameDrafted,
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, frameUid }) => [
+        { type: 'FrameVersions', id: uid },
+        ...frameVersionChangeTags(frameUid),
+      ],
+    }),
+    // Also deletes the version's frames/<uid>/ folder (best effort).
+    frameVersionRemove: builder.mutation({
+      query: ({ uid }) => ({ url: `/admin/frame-versions/${uid}`, method: 'DELETE' }),
+      transformResponse: withFrameDrafted,
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, frameUid }) => [
+        { type: 'FrameVersions', id: uid },
+        ...frameVersionChangeTags(frameUid),
+      ],
+    }),
+
+    // ---- Frame bundle ingest (per VERSION) ----------------------------------
+    // Same flow as templates: files are PUT to S3 first (presign target
+    // { type:'frame_file', frame_version_uid }, key frames/<uid>/<basename>,
+    // pending, no per-file confirm). Confirm activates the folder and saves
+    // content + thumbnail_s3_key; `content` is optional (thumbnail-only
+    // replace). Reset wipes the folder, clears content (and the thumbnail if it
+    // lives in that folder) and drafts a live version — `frame_drafted` says
+    // the frame went to draft too.
+    frameBundleConfirm: builder.mutation({
+      query: ({ uid, content, thumbnail_filename }) => ({
+        url: `/admin/frame-versions/${uid}/bundle/confirm`,
+        method: 'POST',
+        body: cleanParams({ content, thumbnail_filename }),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, frameUid }) => [
+        { type: 'FrameVersions', id: uid },
+        ...frameVersionChangeTags(frameUid),
+      ],
+    }),
+    frameBundleReset: builder.mutation({
+      query: ({ uid }) => ({ url: `/admin/frame-versions/${uid}/bundle/reset`, method: 'POST' }),
+      transformResponse: withFrameDrafted,
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid, frameUid }) => [
+        { type: 'FrameVersions', id: uid },
+        ...frameVersionChangeTags(frameUid),
+      ],
+    }),
+    // Move one version into another frame (the target's details win). Same
+    // dry-run plan shape as the merge; 409 carries the conflicts.
+    frameVersionMove: builder.mutation({
+      query: ({ uid, frame_uid, dryRun }) => ({
+        url: `/admin/frame-versions/${uid}/move`,
+        method: 'POST',
+        params: dryRun ? { dry_run: 1 } : undefined,
+        body: { frame_uid },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, error, { uid, frame_uid, frameUid, dryRun }) =>
+        error || dryRun
+          ? []
+          : [
+              { type: 'FrameVersions', id: uid },
+              ...frameVersionChangeTags(frameUid),
+              ...frameVersionChangeTags(frame_uid),
+            ],
     }),
     // Bulk reorder — array position becomes display_order FOR THE SUBMITTED UIDS
     // ONLY, in one all-or-nothing transaction. Sending a partial list (one page,
