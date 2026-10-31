@@ -8,10 +8,15 @@ const { Text } = Typography;
  * the public config feed and lazy-loads so off-screen rows don't fetch. Renders
  * an em-dash when there's no key/base — pass `placeholder` where a missing image
  * is a problem worth showing (e.g. a template with no thumbnail).
+ *
+ * `v` (e.g. the record's updated_at) is appended as `?v=` so a re-upload that
+ * reuses the same key (bundle thumbnails keep their filename) isn't served
+ * from a stale cache.
  */
-export default function ImageThumb({ k, size = 32, alt = '', placeholder }) {
+export default function ImageThumb({ k, v, size = 32, alt = '', placeholder }) {
   const base = useCdnBaseUrl();
-  const url = imageUrl(base, k);
+  const raw = imageUrl(base, k);
+  const url = raw && v ? `${raw}?v=${encodeURIComponent(v)}` : raw;
   if (!url) return placeholder ?? <Text type="secondary">—</Text>;
   return (
     <img

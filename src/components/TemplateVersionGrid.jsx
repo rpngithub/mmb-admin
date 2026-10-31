@@ -41,9 +41,11 @@ import {
   useDefaultTemplateSize,
   detailLines,
 } from '../lib/templateFamilies';
+import { TEMPLATE_VERSIONS, parentArgs } from '../lib/versionKinds';
 import ImageThumb from './ImageThumb';
 import TemplateBundlePanel from './TemplateBundlePanel';
 import { MoveVersionModal } from './TemplateFamilyMoveModals';
+import { MoveFrameVersionModal } from './FrameMoveModals';
 
 const { Text, Paragraph } = Typography;
 
@@ -61,23 +63,29 @@ const REQUIRED_ROW_EDGE = '3px solid #1677ff';
  * side has a version the other side is greyed out. The ROW the publish gate
  * needs (English, or Text-free) is highlighted — an active version in any of
  * its cells satisfies it. The default-size column is only marked as preferred.
+ *
+ * Shared by template designs and frames: `kind` (lib/versionKinds) supplies the
+ * endpoints, permission domain and wording. `family` is the parent record —
+ * a template family or a frame (both carry id, uid, status).
  */
-export default function TemplateVersionGrid({ family, versions, loading }) {
+export default function TemplateVersionGrid({ family, versions, loading, kind = TEMPLATE_VERSIONS }) {
   const perms = usePermissions();
   const { message, modal } = App.useApp();
-  const canCreate = perms.can('templates', 'create');
-  const canUpdate = perms.can('templates', 'update');
-  const canDelete = perms.can('templates', 'delete');
+  const canCreate = perms.can(kind.permission, 'create');
+  const canUpdate = perms.can(kind.permission, 'update');
+  const canDelete = perms.can(kind.permission, 'delete');
   const canReadLanguages = perms.canRead('languages');
+  const parent = kind.parent;
 
   const { data: activeLanguages } = adminApi.endpoints.languagesFiltered.useQuery(
     { is_active: 1 },
     { skip: !canReadLanguages },
   );
   const { data: allSizes } = adminApi.endpoints.templateSizesList.useQuery();
-  const [createVersion] = adminApi.endpoints.templateVersionCreate.useMutation();
-  const [updateVersion] = adminApi.endpoints.templateVersionUpdate.useMutation();
-  const [removeVersion] = adminApi.endpoints.templateVersionRemove.useMutation();
+  // `kind` is fixed for a mounted grid, so the hook order never changes.
+  const [createVersion] = adminApi.endpoints[kind.endpoints.create].useMutation();
+  const [updateVersion] = adminApi.endpoints[kind.endpoints.update].useMutation();
+  const [removeVersion] = adminApi.endpoints[kind.endpoints.remove].useMutation();
 
   const [busy, setBusy] = useState(null); // cell key or version uid with a call in flight
   const [bundleUid, setBundleUid] = useState(null);
@@ -142,9 +150,8 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   const withDropWarning = (v, action, run) => {
     if (!wouldDropFamily(v)) return run();
     modal.confirm({
-      title: `${action} the version this design needs to stay live?`,
-      content:
-        'This is the design’s only active English (or text-free) version. The design will go back to draft and disappear from the app until another one is published.',
+      title: `${action} the version this ${parent} needs to stay live?`,
+      content: `This is the ${parent}’s only active English (or text-free) version. The ${parent} will go back to draft and disappear from the app until another one is published.`,
       okText: action,
       okButtonProps: { danger: true },
       onOk: run,
@@ -155,6 +162,13 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   const rowDisabled = (languageId) =>
     languageId == null ? mode === 'languages' : mode === 'text_free';
 
+  // The API flags (frames only, today) when a version change drafted the parent.
+  const noteDrafted = (res) => {
+    if (res?.frame_drafted) {
+      message.warning(`The ${parent} lost its last live English / text-free version and went back to draft.`);
+    }
+  };
+
   // ---- actions --------------------------------------------------------------
 
   const addVersion = async (languageId, size) => {
@@ -162,8 +176,12 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
     setBusy(key);
     try {
       const created = await createVersion({
-        familyUid,
-        body: { family_id: family.id, language_id: languageId ?? null, size_id: size.id },
+        ...parentArgs(kind, familyUid),
+        body: {
+          [kind.parentIdField]: family.id,
+          language_id: languageId ?? null,
+          size_id: size.id,
+        },
       }).unwrap();
       message.success('Version created as a draft — now upload its bundle');
       if (created?.uid) setBundleUid(created.uid);
@@ -180,8 +198,13 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   const setStatus = async (v, status) => {
     setBusy(v.uid);
     try {
-      await updateVersion({ uid: v.uid, familyUid, body: { status } }).unwrap();
+      const res = await updateVersion({
+        uid: v.uid,
+        ...parentArgs(kind, familyUid),
+        body: { status },
+      }).unwrap();
       message.success(status === 'active' ? 'Version published' : 'Version unpublished');
+      noteDrafted(res);
     } catch (err) {
       const lines = detailLines(err);
       modal.error({
@@ -202,8 +225,9 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   const deleteVersion = (v) => {
     const run = async () => {
       try {
-        await removeVersion({ uid: v.uid, familyUid }).unwrap();
+        const res = await removeVersion({ uid: v.uid, ...parentArgs(kind, familyUid) }).unwrap();
         message.success('Version deleted');
+        noteDrafted(res);
       } catch (err) {
         message.error(err?.message || 'Could not delete the version.');
       }
@@ -218,7 +242,8 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
           </Text>
           {wouldDropFamily(v) && (
             <Text type="danger">
-              It’s the only version keeping this design live — the design will go back to draft.
+              It’s the only version keeping this {parent} live — the {parent} will go back to
+              draft.
             </Text>
           )}
         </Space>
@@ -253,8 +278,8 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
         <Tooltip
           title={
             row.languageId == null
-              ? 'This design has language versions, so it can’t also have text-free ones.'
-              : 'This design is text-free, so it can’t also have language versions.'
+              ? `This ${parent} has language versions, so it can’t also have text-free ones.`
+              : `This ${parent} is text-free, so it can’t also have language versions.`
           }
         >
           <div style={box}>
@@ -309,7 +334,7 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
               disabled: !publishable,
             }),
       canUpdate && { key: 'reslot', icon: <SwapOutlined />, label: 'Change language / size…' },
-      canUpdate && { key: 'move', icon: <ExportOutlined />, label: 'Move to another design…' },
+      canUpdate && { key: 'move', icon: <ExportOutlined />, label: `Move to another ${parent}…` },
       canDelete && { type: 'divider' },
       canDelete && { key: 'delete', icon: <DeleteOutlined />, label: 'Delete version', danger: true },
     ].filter(Boolean);
@@ -352,6 +377,7 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
         >
           <ImageThumb
             k={v.thumbnail_s3_key}
+            v={v.updated_at}
             size={64}
             placeholder={
               <div
@@ -425,7 +451,7 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
             {row.label}
           </Text>
           {isRequiredRow(row.languageId) && !rowDisabled(row.languageId) && (
-            <RequiredBadge met={gateMet} />
+            <RequiredBadge met={gateMet} parent={parent} />
           )}
           {row.hint && (
             <Text type="secondary" style={{ fontSize: 11 }}>
@@ -445,7 +471,9 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
             {!isActiveRow(s) ? ' · inactive' : ''}
           </Text>
           {defaultSize?.id === s.id && (
-            <Tooltip title="The default size (App Settings). Catalogue cards show this size when a design has several. Not required for publishing.">
+            <Tooltip
+              title={`The default size (App Settings). Cards show this size when a ${parent} has several. Not required for publishing.`}
+            >
               <Tag
                 icon={<StarFilled style={{ color: '#faad14' }} />}
                 style={{ marginInlineEnd: 0, marginTop: 2, fontSize: 10, lineHeight: '16px', fontWeight: 400 }}
@@ -471,6 +499,7 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }}>
       <GridLegend
+        parent={parent}
         defaultSlug={defaultSlug}
         defaultSize={defaultSize}
         english={english}
@@ -502,23 +531,36 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
       >
         {bundleUid && (
           <TemplateBundlePanel
+            kind={kind}
             uid={bundleUid}
             familyUid={familyUid}
             thumbnailKey={bundleVersion?.thumbnail_s3_key}
+            thumbnailVersion={bundleVersion?.updated_at}
             hasContent={isTrue(bundleVersion?.has_content)}
           />
         )}
       </Modal>
 
-      <MoveVersionModal
-        open={Boolean(moveFor)}
-        version={moveFor}
-        familyUid={familyUid}
-        onClose={() => setMoveFor(null)}
-        onMoved={() => setMoveFor(null)}
-      />
+      {kind.key === 'frame' ? (
+        <MoveFrameVersionModal
+          open={Boolean(moveFor)}
+          version={moveFor}
+          frameUid={familyUid}
+          onClose={() => setMoveFor(null)}
+          onMoved={() => setMoveFor(null)}
+        />
+      ) : (
+        <MoveVersionModal
+          open={Boolean(moveFor)}
+          version={moveFor}
+          familyUid={familyUid}
+          onClose={() => setMoveFor(null)}
+          onMoved={() => setMoveFor(null)}
+        />
+      )}
 
       <ReslotModal
+        kind={kind}
         version={reslotFor}
         versions={list}
         languages={languages}
@@ -531,9 +573,9 @@ export default function TemplateVersionGrid({ family, versions, loading }) {
   );
 }
 
-function RequiredBadge({ met }) {
+function RequiredBadge({ met, parent }) {
   return (
-    <Tooltip title="To publish, the design needs an active version in this row — any size counts.">
+    <Tooltip title={`To publish, the ${parent} needs an active version in this row — any size counts.`}>
       <Tag
         color={met ? 'success' : 'blue'}
         style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px' }}
@@ -544,29 +586,29 @@ function RequiredBadge({ met }) {
   );
 }
 
-function GridLegend({ defaultSlug, defaultSize, english, mode, canReadLanguages }) {
+function GridLegend({ parent, defaultSlug, defaultSize, english, mode, canReadLanguages }) {
   return (
     <Space direction="vertical" size={6} style={{ width: '100%' }}>
       <Paragraph type="secondary" style={{ margin: 0 }}>
-        One version per language and size. A design is either <Text strong>text-free</Text> or has{' '}
-        <Text strong>language</Text> versions — never both. To publish, the highlighted row needs an
-        active version in <Text strong>any</Text> size
-        {mode === 'none' ? ' (English, or text-free for a design with no text)' : ''}. The column
-        marked “Preferred on cards” is only what the app shows first when a design has several
-        sizes.
+        One version per language and size. A {parent} is either <Text strong>text-free</Text> or
+        has <Text strong>language</Text> versions — never both. To publish, the highlighted row
+        needs an active version in <Text strong>any</Text> size
+        {mode === 'none' ? ` (English, or text-free for a ${parent} with no text)` : ''}. The
+        column marked “Preferred on cards” is only what the app shows first when a {parent} has
+        several sizes.
       </Paragraph>
       {defaultSlug && !defaultSize && (
         <Alert
           type="info"
           showIcon
-          message={`The default size “${defaultSlug}” (App Settings) doesn’t match any template size, so cards just use each design’s other sizes. Publishing isn’t affected.`}
+          message={`The default size “${defaultSlug}” (App Settings) doesn’t match any template size, so cards just use each ${parent}’s other sizes. Publishing isn’t affected.`}
         />
       )}
       {!canReadLanguages && (
         <Alert
           type="warning"
           showIcon
-          message="You can’t read Languages, so only the languages already used by this design are shown."
+          message={`You can’t read Languages, so only the languages already used by this ${parent} are shown.`}
         />
       )}
       {canReadLanguages && !english && mode !== 'text_free' && (
@@ -581,10 +623,10 @@ function GridLegend({ defaultSlug, defaultSize, english, mode, canReadLanguages 
 }
 
 /** Change a version's language and/or size. 409 when the slot is taken. */
-function ReslotModal({ version, versions, languages, sizes, familyUid, onClose, confirmDrop }) {
+function ReslotModal({ kind, version, versions, languages, sizes, familyUid, onClose, confirmDrop }) {
   const { message } = App.useApp();
   const [form] = Form.useForm();
-  const [updateVersion, { isLoading }] = adminApi.endpoints.templateVersionUpdate.useMutation();
+  const [updateVersion, { isLoading }] = adminApi.endpoints[kind.endpoints.update].useMutation();
   const [error, setError] = useState(null);
   const languageId = Form.useWatch('language_id', form);
   const sizeId = Form.useWatch('size_id', form);
@@ -610,8 +652,15 @@ function ReslotModal({ version, versions, languages, sizes, familyUid, onClose, 
     const run = async () => {
       setError(null);
       try {
-        await updateVersion({ uid: version.uid, familyUid, body }).unwrap();
+        const res = await updateVersion({
+          uid: version.uid,
+          ...parentArgs(kind, familyUid),
+          body,
+        }).unwrap();
         message.success('Version moved to the new slot');
+        if (res?.frame_drafted) {
+          message.warning(`The ${kind.parent} lost its last live English / text-free version and went back to draft.`);
+        }
         onClose();
       } catch (err) {
         const lines = detailLines(err);
