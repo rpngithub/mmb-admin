@@ -38,6 +38,12 @@ import NotificationTemplatesPage from './pages/NotificationTemplatesPage';
 import NotificationCampaignsPage from './pages/NotificationCampaignsPage';
 import UserNotificationsPage from './pages/UserNotificationsPage';
 import PageContentPage from './pages/PageContentPage';
+import AiHealthPage from './pages/ai/AiHealthPage';
+import AiProvidersPage from './pages/ai/AiProvidersPage';
+import AiPurchasesPage from './pages/ai/AiPurchasesPage';
+import AiOperationsPage from './pages/ai/AiOperationsPage';
+import AiJobsPage from './pages/ai/AiJobsPage';
+import AiMarginPage from './pages/ai/AiMarginPage';
 import GenericResourcePage from './pages/GenericResourcePage';
 import NotFound from './pages/NotFound';
 import { RESOURCES } from './resources';
@@ -196,6 +202,55 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="feedback">
               <FeedbackPage />
+            </RequirePermission>
+          }
+        />
+        {/* AI — four super_admin-only domains, one per screen family. */}
+        <Route
+          path="ai"
+          element={
+            <RequirePermission domain="ai_reports">
+              <AiHealthPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/providers"
+          element={
+            <RequirePermission domain="ai_providers">
+              <AiProvidersPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/purchases"
+          element={
+            <RequirePermission domain="ai_providers">
+              <AiPurchasesPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/operations"
+          element={
+            <RequirePermission domain="ai_operations">
+              <AiOperationsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/jobs"
+          element={
+            <RequirePermission domain="ai_jobs">
+              <AiJobsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="ai/margin"
+          element={
+            <RequirePermission domain="ai_reports">
+              <AiMarginPage />
             </RequirePermission>
           }
         />

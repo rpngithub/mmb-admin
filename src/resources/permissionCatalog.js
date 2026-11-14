@@ -81,4 +81,22 @@ export const PERMISSION_CATALOG = [
     actions: ALL,
   },
   { domain: 'settings', label: 'App Settings', actions: ALL },
+  // AI. Four domains, none of them in content_admin — only super_admin holds
+  // them out of the box. Providers carry API keys and spend real money, so do
+  // NOT add these to a content role. Several writes also need the admin's
+  // password re-typed (step-up), on top of the permission.
+  {
+    domain: 'ai_providers',
+    label: 'AI Providers',
+    hint: 'providers, API keys & credit purchases — super admin only',
+    actions: ALL,
+  },
+  {
+    domain: 'ai_operations',
+    label: 'AI Operations',
+    hint: 'what users buy, and the routes to providers — super admin only',
+    actions: ALL,
+  },
+  { domain: 'ai_jobs', label: 'AI Jobs', hint: 'job log & resolve-and-refund — super admin only', actions: ALL },
+  { domain: 'ai_reports', label: 'AI Reports', hint: 'health & margin report — super admin only', actions: ALL },
 ];

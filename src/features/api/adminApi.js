@@ -1,6 +1,7 @@
 import { createApi } from '@reduxjs/toolkit/query/react';
 import { baseQueryWithReauth } from './baseQuery';
 import { RESOURCES } from '../../resources';
+import { stepUpHeaders, takeSecret } from '../auth/stepUp';
 
 function cleanParams(obj = {}) {
   const out = {};
@@ -32,6 +33,29 @@ const SPECIAL_TAGS = [
   'PageSections',
   'DashboardManifest',
   'DashboardWidget',
+  'AiHealth',
+  'AiProvider',
+  'AiCredential',
+  'AiPurchase',
+  'AiOperation',
+  'AiJob',
+  'AiMargin',
+];
+
+// ---- AI section helpers -------------------------------------------------------
+const AI = '/admin/ai';
+
+/** Lists come back as a bare array; tolerate `{ items }` too. */
+const asList = (data) => (Array.isArray(data) ? data : data?.items || data?.rows || []);
+
+/**
+ * A credit purchase moves the provider's cost per unit, which feeds Providers,
+ * Health (cost column, balance) and the margin report.
+ */
+const AI_COST_TAGS = [
+  { type: 'AiProvider', id: 'LIST' },
+  { type: 'AiHealth', id: 'ALL' },
+  { type: 'AiMargin', id: 'ALL' },
 ];
 
 /**
@@ -1989,6 +2013,280 @@ export const adminApi = createApi({
       extraOptions: { silent: true },
       transformResponse: (data, meta) => ({ data: data ?? {}, meta: meta?.envelope || {} }),
       providesTags: (_r, _e, { key }) => [{ type: 'DashboardWidget', id: key }],
+    }),
+
+    // ---- AI (base /admin/ai) -----------------------------------------------
+    // Four permission domains, all super_admin-only: ai_providers (providers,
+    // credentials, credit purchases), ai_operations (operations + routes),
+    // ai_jobs, ai_reports (health + margin).
+    //
+    // STEP-UP: mutations that take `stepUp` send `X-Admin-Password` for that
+    // one request. `stepUp` is an opaque one-shot token from useStepUp() — never
+    // the password itself, because RTK keeps `originalArgs` in the store. Those
+    // mutations are silent: the step-up modal handles 403 REAUTH_* / 429, and
+    // the caller explains everything else.
+    aiHealth: builder.query({
+      query: () => ({ url: `${AI}/health` }),
+      providesTags: [{ type: 'AiHealth', id: 'ALL' }],
+    }),
+
+    // Providers -------------------------------------------------------------
+    aiProvidersList: builder.query({
+      query: () => ({ url: `${AI}/providers` }),
+      transformResponse: asList,
+      providesTags: (result) => [
+        { type: 'AiProvider', id: 'LIST' },
+        ...(result || []).map((p) => ({ type: 'AiProvider', id: p.uid })),
+      ],
+    }),
+    aiProviderGet: builder.query({
+      query: (uid) => ({ url: `${AI}/providers/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'AiProvider', id: uid }],
+    }),
+    // What this backend can talk to → [{ key, requires_api_key, allowed_hosts[],
+    // models[] | null, in_use, provider: { uid, status } | null }]. Feeds the
+    // Create Provider key Select, base_url help, the Credentials tab (hidden
+    // when requires_api_key is false) and the route model Select (models null =
+    // free text, e.g. google). Tagged with the provider LIST so a create /
+    // delete refreshes in_use.
+    aiAdapters: builder.query({
+      query: () => ({ url: `${AI}/adapters` }),
+      transformResponse: asList,
+      providesTags: [{ type: 'AiProvider', id: 'LIST' }],
+    }),
+    // `key` must be one of /adapters — its 400 says so.
+    // Not documented as step-up, but takes a token so the page can retry with
+    // the password if the server ever answers REAUTH_REQUIRED.
+    aiProviderCreate: builder.mutation({
+      query: ({ body, stepUp }) => ({
+        url: `${AI}/providers`,
+        method: 'POST',
+        body,
+        headers: stepUpHeaders(stepUp),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: [
+        { type: 'AiProvider', id: 'LIST' },
+        { type: 'AiHealth', id: 'ALL' },
+      ],
+    }),
+    // Changing base_url or credential_source needs step-up; other fields don't.
+    // Never send `key` or `cost_per_unit_inr` (both 400). `settings` is
+    // REPLACED as a whole — always send the full merged object. Invalidating the
+    // provider refetches cost_per_unit_inr, which a settings change recomputes.
+    aiProviderUpdate: builder.mutation({
+      query: ({ uid, body, stepUp }) => ({
+        url: `${AI}/providers/${uid}`,
+        method: 'PATCH',
+        body,
+        headers: stepUpHeaders(stepUp),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'AiProvider', id: uid },
+        { type: 'AiProvider', id: 'LIST' },
+        { type: 'AiHealth', id: 'ALL' },
+      ],
+    }),
+    // 409 when the provider has jobs / routes / keys → "Disable it instead".
+    aiProviderRemove: builder.mutation({
+      query: (uid) => ({ url: `${AI}/providers/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: [
+        { type: 'AiProvider', id: 'LIST' },
+        { type: 'AiHealth', id: 'ALL' },
+      ],
+    }),
+
+    // Credentials — WRITE-ONLY: the list carries last4, never the value.
+    aiCredentialsList: builder.query({
+      query: (providerUid) => ({ url: `${AI}/providers/${providerUid}/credentials` }),
+      transformResponse: asList,
+      providesTags: (_r, _e, providerUid) => [{ type: 'AiCredential', id: providerUid }],
+    }),
+    // `secret` is a one-shot token holding { kind, value } — the key value must
+    // not sit in the store's originalArgs any more than the password may.
+    // 409 AI_MASTER_KEY_MISSING when the server can't encrypt it.
+    aiCredentialCreate: builder.mutation({
+      query: ({ providerUid, secret, stepUp }) => ({
+        url: `${AI}/providers/${providerUid}/credentials`,
+        method: 'POST',
+        body: takeSecret(secret) || {},
+        headers: stepUpHeaders(stepUp),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { providerUid }) => [
+        { type: 'AiCredential', id: providerUid },
+        { type: 'AiHealth', id: 'ALL' },
+      ],
+    }),
+    // A real (possibly billed) call to the provider. → { ok, verified, code?, detail? }
+    aiCredentialVerify: builder.mutation({
+      query: ({ providerUid, credUid }) => ({
+        url: `${AI}/providers/${providerUid}/credentials/${credUid}/verify`,
+        method: 'POST',
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { providerUid }) => [{ type: 'AiCredential', id: providerUid }],
+    }),
+    // pending → active; the previous active key of that kind is retired.
+    aiCredentialActivate: builder.mutation({
+      query: ({ providerUid, credUid, stepUp }) => ({
+        url: `${AI}/providers/${providerUid}/credentials/${credUid}/activate`,
+        method: 'POST',
+        headers: stepUpHeaders(stepUp),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { providerUid }) => [
+        { type: 'AiCredential', id: providerUid },
+        { type: 'AiHealth', id: 'ALL' },
+        { type: 'AiProvider', id: 'LIST' },
+      ],
+    }),
+    aiCredentialRetire: builder.mutation({
+      query: ({ providerUid, credUid, stepUp }) => ({
+        url: `${AI}/providers/${providerUid}/credentials/${credUid}/retire`,
+        method: 'POST',
+        headers: stepUpHeaders(stepUp),
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { providerUid }) => [
+        { type: 'AiCredential', id: providerUid },
+        { type: 'AiHealth', id: 'ALL' },
+        { type: 'AiProvider', id: 'LIST' },
+      ],
+    }),
+
+    // Credit purchases — every write recomputes the provider's cost per unit.
+    aiPurchasesList: builder.query({
+      query: (params = {}) => ({ url: `${AI}/provider-purchases`, params: cleanParams(params) }),
+      transformResponse: (data, meta) => {
+        const items = asList(data);
+        return { items, total: meta?.total ?? items.length };
+      },
+      providesTags: [{ type: 'AiPurchase', id: 'LIST' }],
+    }),
+    aiPurchaseCreate: builder.mutation({
+      query: (body) => ({ url: `${AI}/provider-purchases`, method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiPurchase', id: 'LIST' }, ...AI_COST_TAGS],
+    }),
+    aiPurchaseUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `${AI}/provider-purchases/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiPurchase', id: 'LIST' }, ...AI_COST_TAGS],
+    }),
+    aiPurchaseRemove: builder.mutation({
+      query: (uid) => ({ url: `${AI}/provider-purchases/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiPurchase', id: 'LIST' }, ...AI_COST_TAGS],
+    }),
+
+    // Operations (ordered by sort_order; each row carries its `routes`) -----
+    aiOperationsList: builder.query({
+      query: () => ({ url: `${AI}/operations` }),
+      transformResponse: asList,
+      providesTags: [{ type: 'AiOperation', id: 'LIST' }],
+    }),
+    aiOperationCreate: builder.mutation({
+      query: (body) => ({ url: `${AI}/operations`, method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiOperation', id: 'LIST' }, { type: 'AiMargin', id: 'ALL' }],
+    }),
+    // `key` is permanent (400 if changed); enum multipliers must price every value.
+    // `plan_ids` REPLACES the allowed plans ([] = every plan); rows come back
+    // with `plans: [{ id, uid, name, plan_type, status }]`. `is_premium_only`
+    // is gone (400). Saving input_schema 400s with one details[] entry per
+    // active route the schema doesn't fit.
+    aiOperationUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `${AI}/operations/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiOperation', id: 'LIST' }, { type: 'AiMargin', id: 'ALL' }],
+    }),
+    // 409 when it has jobs or routes → "Deactivate it instead".
+    aiOperationRemove: builder.mutation({
+      query: (uid) => ({ url: `${AI}/operations/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiOperation', id: 'LIST' }],
+    }),
+    // FULL ordered list of uids. Silent: the page patches optimistically.
+    aiOperationsReorder: builder.mutation({
+      query: (ids) => ({ url: `${AI}/operations/reorder`, method: 'PATCH', body: { ids } }),
+      extraOptions: { silent: true },
+      invalidatesTags: [{ type: 'AiOperation', id: 'LIST' }],
+    }),
+
+    // Routes — shown nested under their operation, so writes refetch the
+    // operations list (which embeds them). operation_id / provider_id are
+    // fixed after create (400). Create / edit / activate 400s when the
+    // operation's input_schema doesn't fit the route's model (one details[]
+    // entry per problem); inactive routes are only checked once switched on.
+    aiRoutesList: builder.query({
+      query: (params = {}) => ({ url: `${AI}/routes`, params: cleanParams(params) }),
+      transformResponse: asList,
+      providesTags: [{ type: 'AiOperation', id: 'ROUTES' }],
+    }),
+    aiRouteCreate: builder.mutation({
+      query: (body) => ({ url: `${AI}/routes`, method: 'POST', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [
+        { type: 'AiOperation', id: 'LIST' },
+        { type: 'AiOperation', id: 'ROUTES' },
+        { type: 'AiMargin', id: 'ALL' },
+      ],
+    }),
+    aiRouteUpdate: builder.mutation({
+      query: ({ uid, body }) => ({ url: `${AI}/routes/${uid}`, method: 'PATCH', body }),
+      extraOptions: { silent: true },
+      invalidatesTags: [
+        { type: 'AiOperation', id: 'LIST' },
+        { type: 'AiOperation', id: 'ROUTES' },
+        { type: 'AiMargin', id: 'ALL' },
+      ],
+    }),
+    // 409 when jobs used it → "Deactivate it instead".
+    aiRouteRemove: builder.mutation({
+      query: (uid) => ({ url: `${AI}/routes/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      invalidatesTags: [
+        { type: 'AiOperation', id: 'LIST' },
+        { type: 'AiOperation', id: 'ROUTES' },
+      ],
+    }),
+
+    // Jobs ------------------------------------------------------------------
+    // status is comma-separated; paginated with meta.total.
+    aiJobsList: builder.query({
+      query: (params = {}) => ({ url: `${AI}/jobs`, params: cleanParams(params) }),
+      transformResponse: (data, meta) => {
+        const items = asList(data);
+        return { items, total: meta?.total ?? items.length };
+      },
+      providesTags: [{ type: 'AiJob', id: 'LIST' }],
+    }),
+    aiJobGet: builder.query({
+      query: (uid) => ({ url: `${AI}/jobs/${uid}` }),
+      providesTags: (_r, _e, uid) => [{ type: 'AiJob', id: uid }],
+    }),
+    // 409 = it already finished — the caller refetches.
+    aiJobResolve: builder.mutation({
+      query: ({ uid, note }) => ({
+        url: `${AI}/jobs/${uid}/resolve`,
+        method: 'POST',
+        body: { outcome: 'refund', ...(note ? { note } : {}) },
+      }),
+      extraOptions: { silent: true },
+      invalidatesTags: (_r, _e, { uid }) => [
+        { type: 'AiJob', id: uid },
+        { type: 'AiJob', id: 'LIST' },
+        { type: 'AiHealth', id: 'ALL' },
+      ],
+    }),
+
+    // Margin report ---------------------------------------------------------
+    aiMarginReport: builder.query({
+      query: (params = {}) => ({ url: `${AI}/reports/margin`, params: cleanParams(params) }),
+      providesTags: [{ type: 'AiMargin', id: 'ALL' }],
     }),
 
     // ---- Generic CRUD resources (generated from config) -------------------

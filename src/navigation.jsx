@@ -25,6 +25,13 @@ import {
   SendOutlined,
   InboxOutlined,
   LayoutOutlined,
+  RobotOutlined,
+  HeartOutlined,
+  CloudServerOutlined,
+  WalletOutlined,
+  ApartmentOutlined,
+  UnorderedListOutlined,
+  LineChartOutlined,
 } from '@ant-design/icons';
 import { RESOURCES } from './resources';
 
@@ -35,6 +42,7 @@ const GROUP_META = {
   Content: { icon: <PictureOutlined /> },
   Notifications: { icon: <BellOutlined /> },
   Billing: { icon: <CreditCardOutlined /> },
+  AI: { icon: <RobotOutlined /> },
   System: { icon: <SettingOutlined /> },
   Audit: { icon: <AuditOutlined /> },
 };
@@ -46,6 +54,7 @@ const GROUP_ORDER = [
   'Content',
   'Notifications',
   'Billing',
+  'AI',
   'System',
   'Audit',
 ];
@@ -162,6 +171,50 @@ const SPECIAL_ITEMS = [
     permission: 'notifications',
     group: 'Notifications',
     icon: <InboxOutlined />,
+  },
+  // AI — four permission domains, all super_admin-only. Each item is gated on
+  // its own domain, so the whole group disappears for an admin holding none.
+  {
+    key: '/ai',
+    label: 'Health',
+    permission: 'ai_reports',
+    group: 'AI',
+    icon: <HeartOutlined />,
+  },
+  {
+    key: '/ai/providers',
+    label: 'Providers',
+    permission: 'ai_providers',
+    group: 'AI',
+    icon: <CloudServerOutlined />,
+  },
+  {
+    key: '/ai/purchases',
+    label: 'Credit Purchases',
+    permission: 'ai_providers',
+    group: 'AI',
+    icon: <WalletOutlined />,
+  },
+  {
+    key: '/ai/operations',
+    label: 'Operations & Routes',
+    permission: 'ai_operations',
+    group: 'AI',
+    icon: <ApartmentOutlined />,
+  },
+  {
+    key: '/ai/jobs',
+    label: 'Jobs',
+    permission: 'ai_jobs',
+    group: 'AI',
+    icon: <UnorderedListOutlined />,
+  },
+  {
+    key: '/ai/margin',
+    label: 'Margin Report',
+    permission: 'ai_reports',
+    group: 'AI',
+    icon: <LineChartOutlined />,
   },
   {
     key: '/activity-logs',
