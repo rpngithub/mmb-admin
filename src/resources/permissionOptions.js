@@ -24,6 +24,11 @@ export const PERMISSION_DOMAINS = [
   // Industry page copy: shared defaults + per-industry overrides.
   'page_content',
   'settings',
+  // AI — super_admin only; never part of a content role.
+  'ai_providers',
+  'ai_operations',
+  'ai_jobs',
+  'ai_reports',
   'users',
   'admins',
   'activity',

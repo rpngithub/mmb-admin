@@ -22,6 +22,7 @@ import {
   EditOutlined,
   DeleteOutlined,
 } from '@ant-design/icons';
+import { useSearchParams } from 'react-router-dom';
 import { adminApi } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
 
@@ -42,7 +43,7 @@ const DEFAULT_SIZE_KEY = 'default_template_size';
 
 // Stable-ish ordering for the grouped sections; unknown groups fall to the end
 // alphabetically, and settings with no group land in "Ungrouped".
-const GROUP_ORDER = ['general', 'billing', 'media', 'uploads'];
+const GROUP_ORDER = ['general', 'billing', 'media', 'uploads', 'ai'];
 const UNGROUPED = 'Ungrouped';
 
 function groupRank(name) {
@@ -123,7 +124,10 @@ export default function AppSettingsPage() {
   const canUpdate = perms.can('settings', 'update');
   const canDelete = perms.can('settings', 'delete');
 
-  const [search, setSearch] = useState('');
+  // `?q=` pre-fills the search — the AI margin report links here with `?q=ai`
+  // so the admin lands on the `ai` group's settings.
+  const [searchParams] = useSearchParams();
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [editor, setEditor] = useState({ open: false, record: null });
   const [togglingId, setTogglingId] = useState(null);
 
@@ -283,6 +287,7 @@ export default function AppSettingsPage() {
           <Input.Search
             allowClear
             placeholder="Search settings"
+            defaultValue={search}
             style={{ width: 240 }}
             onChange={(e) => setSearch(e.target.value)}
             onSearch={setSearch}
