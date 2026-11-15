@@ -115,7 +115,7 @@ function UserLink({ user, fallback }) {
   const perms = usePermissions();
   const name = user?.name || fallback || 'Unnamed';
   if (!user?.uid || !perms.canRead('users')) return <span>{name}</span>;
-  return <Link to={`/users?uid=${encodeURIComponent(user.uid)}`}>{name}</Link>;
+  return <Link to={`/users/${encodeURIComponent(user.uid)}`}>{name}</Link>;
 }
 
 /** Flat `{ key: number }` map rendered as small labelled numbers. */

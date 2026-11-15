@@ -1,105 +1,136 @@
-import { useState } from 'react';
-import {
-  Table,
-  Typography,
-  Space,
-  Input,
-  Button,
-  Switch,
-  Tag,
-  Drawer,
-  Descriptions,
-  Tabs,
-  App,
-} from 'antd';
-import { ReloadOutlined, EyeOutlined, BellOutlined } from '@ant-design/icons';
-import { Link, useSearchParams } from 'react-router-dom';
-import dayjs from 'dayjs';
-import {
-  useUsersListQuery,
-  useUserGetQuery,
-  useUserUpdateStatusMutation,
-} from '../features/api/adminApi';
+import { Table, Typography, Space, Input, Button, Switch, Tag, Select, App } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
+import { useUsersListQuery, useUserUpdateStatusMutation } from '../features/api/adminApi';
 import { usePermissions } from '../features/auth/usePermissions';
-import { humanize } from '../components/formUtils';
-import UserQuotaGrantsPanel from '../components/UserQuotaGrantsPanel';
+import { formatDate, formatDateTime } from '../lib/ai';
+import { ACCOUNT_TYPE_OPTIONS, ACTIVE_OPTIONS, PLAN_STATE_OPTIONS, isTruthyFlag } from '../lib/users';
+import { AccountTypeTag, CurrentPlanCell } from './users/userShared';
 
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
+const DEFAULT_PAGE_SIZE = 20;
+
+/**
+ * Users list. Every filter and the page live in the URL query, so a filtered
+ * list is linkable and survives the round trip to a user's detail page.
+ */
 export default function UsersPage() {
   const perms = usePermissions();
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const canUpdate = perms.can('users', 'update');
-
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(10);
-  const [search, setSearch] = useState('');
-  // `?uid=` opens that user's drawer (dashboard widgets link here).
   const [searchParams, setSearchParams] = useSearchParams();
-  const [viewUid, setViewUidState] = useState(() => searchParams.get('uid'));
-  const setViewUid = (uid) => {
-    setViewUidState(uid);
-    if (!uid && searchParams.has('uid')) {
-      const next = new URLSearchParams(searchParams);
-      next.delete('uid');
-      setSearchParams(next, { replace: true });
-    }
-  };
+
+  const search = searchParams.get('search') || '';
+  const accountType = searchParams.get('account_type') || undefined;
+  const planState = searchParams.get('plan_state') || undefined;
+  const isActive = searchParams.get('is_active') ?? undefined;
+  const page = Math.max(parseInt(searchParams.get('page'), 10) || 1, 1);
+  const pageSize = parseInt(searchParams.get('size'), 10) || DEFAULT_PAGE_SIZE;
 
   const { data, isLoading, isFetching, refetch } = useUsersListQuery({
     search: search || undefined,
+    account_type: accountType,
+    plan_state: planState,
+    is_active: isActive,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
-  const [updateStatus, { isLoading: updating }] = useUserUpdateStatusMutation();
+  const [updateStatus, { isLoading: updating, originalArgs }] = useUserUpdateStatusMutation();
 
-  const rows = data?.items || [];
-  const total = data?.total || 0;
+  // Old deep links (dashboard widgets, bookmarks) opened a drawer with ?uid=.
+  const legacyUid = searchParams.get('uid');
+  if (legacyUid) return <Navigate to={`/users/${encodeURIComponent(legacyUid)}`} replace />;
+
+  /** Patch the query string; any filter change goes back to page 1. */
+  const setParams = (patch, { keepPage = false } = {}) => {
+    const next = new URLSearchParams(searchParams);
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || v === null || v === '') next.delete(k);
+      else next.set(k, String(v));
+    }
+    if (!keepPage) next.delete('page');
+    setSearchParams(next, { replace: true });
+  };
+
+  const filtersActive = Boolean(search || accountType || planState || isActive !== undefined);
 
   const toggleActive = async (record, checked) => {
     try {
       await updateStatus({ uid: record.uid, is_active: checked ? 1 : 0 }).unwrap();
-      message.success(`User ${checked ? 'activated' : 'deactivated'}`);
+      message.success(`User ${checked ? 'activated' : 'suspended'}`);
     } catch {
-      /* notification handled globally */
+      /* notification handled globally (409 = account already purged) */
     }
   };
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name', render: (v) => v || '—' },
-    { title: 'Email', dataIndex: 'email', key: 'email', render: (v) => v || '—' },
+    {
+      title: 'User',
+      key: 'name',
+      render: (_v, r) => (
+        <Space direction="vertical" size={0}>
+          <Text strong>{r.name || r.phone || r.email || '—'}</Text>
+          {r.name && r.phone && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {r.phone}
+            </Text>
+          )}
+          {r.email && (
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {r.email}
+            </Text>
+          )}
+        </Space>
+      ),
+    },
+    {
+      title: 'Account',
+      dataIndex: 'account_type',
+      key: 'account_type',
+      render: (v) => <AccountTypeTag value={v} />,
+    },
+    {
+      title: 'Plan',
+      dataIndex: 'current_plan',
+      key: 'current_plan',
+      render: (v) => <CurrentPlanCell plan={v} />,
+    },
     {
       title: 'Active',
       dataIndex: 'is_active',
       key: 'is_active',
-      width: 110,
+      width: 100,
       render: (value, record) => {
-        const checked = value === true || value === 1 || value === '1';
+        const checked = isTruthyFlag(value);
+        if (record.purged_at) return <Tag color="red">Deleted</Tag>;
         return canUpdate ? (
-          <Switch
-            size="small"
-            checked={checked}
-            loading={updating}
-            onChange={(c) => toggleActive(record, c)}
-          />
+          // The row itself navigates — keep the switch's click to itself.
+          <span onClick={(e) => e.stopPropagation()}>
+            <Switch
+              size="small"
+              checked={checked}
+              loading={updating && originalArgs?.uid === record.uid}
+              onChange={(c) => toggleActive(record, c)}
+            />
+          </span>
         ) : (
-          <Tag color={checked ? 'green' : 'default'}>{checked ? 'Active' : 'Inactive'}</Tag>
+          <Tag color={checked ? 'green' : 'default'}>{checked ? 'Active' : 'Suspended'}</Tag>
         );
       },
+    },
+    {
+      title: 'Last active',
+      dataIndex: 'last_active_at',
+      key: 'last_active_at',
+      render: (v) => formatDateTime(v),
     },
     {
       title: 'Joined',
       dataIndex: 'created_at',
       key: 'created_at',
-      render: (v) => (v && dayjs(v).isValid() ? dayjs(v).format('YYYY-MM-DD') : '—'),
-    },
-    {
-      title: 'Actions',
-      key: 'actions',
-      width: 90,
-      render: (_v, record) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => setViewUid(record.uid)} />
-      ),
+      render: (v) => formatDate(v),
     },
   ];
 
@@ -119,105 +150,85 @@ export default function UsersPage() {
           Users
         </Title>
         <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="Search users"
-            style={{ width: 260 }}
-            onSearch={(val) => {
-              setSearch(val);
-              setPage(1);
-            }}
-          />
+          {filtersActive && (
+            <Button onClick={() => setSearchParams(new URLSearchParams(), { replace: true })}>
+              Clear filters
+            </Button>
+          )}
           <Button icon={<ReloadOutlined />} onClick={refetch} loading={isFetching}>
             Reload
           </Button>
         </Space>
       </div>
 
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Input.Search
+          // Keyed on the URL value so "Clear filters" empties the box too.
+          key={search}
+          allowClear
+          defaultValue={search}
+          placeholder="Name, phone or email"
+          style={{ width: 260 }}
+          onSearch={(val) => setParams({ search: val.trim() })}
+        />
+        <Select
+          allowClear
+          placeholder="Account type"
+          style={{ width: 150 }}
+          value={accountType}
+          onChange={(v) => setParams({ account_type: v })}
+          options={ACCOUNT_TYPE_OPTIONS}
+        />
+        <Select
+          allowClear
+          placeholder="Plan"
+          style={{ width: 210 }}
+          value={planState}
+          onChange={(v) => setParams({ plan_state: v })}
+          options={PLAN_STATE_OPTIONS}
+          optionRender={(o) => (
+            <Space direction="vertical" size={0}>
+              <span>{o.data.label}</span>
+              <Text type="secondary" style={{ fontSize: 12, whiteSpace: 'normal' }}>
+                {o.data.title}
+              </Text>
+            </Space>
+          )}
+        />
+        <Select
+          allowClear
+          placeholder="Status"
+          style={{ width: 130 }}
+          value={isActive}
+          onChange={(v) => setParams({ is_active: v })}
+          options={ACTIVE_OPTIONS}
+        />
+      </Space>
+
       <Table
         rowKey="uid"
         columns={columns}
-        dataSource={rows}
-        loading={isLoading}
+        dataSource={data?.items || []}
+        loading={isLoading || isFetching}
         scroll={{ x: 'max-content' }}
+        onRow={(record) => ({
+          onClick: () => navigate(`/users/${record.uid}`),
+          style: { cursor: 'pointer' },
+        })}
         pagination={{
           current: page,
           pageSize,
-          total,
+          total: data?.total || 0,
           showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
           showTotal: (t) => `${t} total`,
-          onChange: (p, ps) => {
-            setPage(p);
-            setPageSize(ps);
-          },
+          onChange: (p, ps) =>
+            setParams(
+              { page: p > 1 ? p : undefined, size: ps !== DEFAULT_PAGE_SIZE ? ps : undefined },
+              { keepPage: true },
+            ),
         }}
       />
-
-      <UserDetailDrawer uid={viewUid} onClose={() => setViewUid(null)} />
     </div>
-  );
-}
-
-/**
- * User detail: the raw record, plus the support view of the user's top-up quota.
- *
- * The grants tab is gated on `quota_packs.update` — the permission the list
- * endpoint itself requires — so an admin who would only get a 403 never sees a
- * tab that can't load. It is deliberately NOT a content permission: pricing and
- * the quota it buys are commerce, so a content_admin doesn't hold it.
- */
-function UserDetailDrawer({ uid, onClose }) {
-  const perms = usePermissions();
-  const { data, isFetching } = useUserGetQuery(uid, { skip: !uid });
-  const canSeeGrants = perms.can('quota_packs', 'update');
-  // "They say they never got it" starts here. The delivery log filters by the
-  // numeric user_id, which only the detail record carries.
-  const canSeeNotifications = perms.canRead('notifications') && data?.id != null;
-
-  const details = (
-    <Descriptions column={1} bordered size="small">
-      {Object.entries(data || {}).map(([key, value]) => (
-        <Descriptions.Item key={key} label={humanize(key)}>
-          {value === null || value === undefined || value === ''
-            ? '—'
-            : typeof value === 'object'
-              ? JSON.stringify(value)
-              : String(value)}
-        </Descriptions.Item>
-      ))}
-    </Descriptions>
-  );
-
-  const items = [{ key: 'details', label: 'Details', children: data ? details : null }];
-  if (canSeeGrants) {
-    items.push({
-      key: 'grants',
-      label: 'Quota grants',
-      // Rendered on first activation, so opening the drawer doesn't fetch grants
-      // for every user an admin merely glances at.
-      children: uid ? (
-        <UserQuotaGrantsPanel userUid={uid} userLabel={data?.name || data?.email || uid} />
-      ) : null,
-    });
-  }
-
-  return (
-    <Drawer
-      title="User details"
-      open={Boolean(uid)}
-      onClose={onClose}
-      width={canSeeGrants ? 900 : 520}
-      destroyOnClose
-      loading={isFetching}
-      extra={
-        canSeeNotifications ? (
-          <Link to={`/notification-log?user_id=${data.id}`}>
-            <Button icon={<BellOutlined />}>Notifications sent</Button>
-          </Link>
-        ) : null
-      }
-    >
-      <Tabs items={items} />
-    </Drawer>
   );
 }

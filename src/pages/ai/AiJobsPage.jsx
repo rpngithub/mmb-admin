@@ -21,6 +21,7 @@ import {
   Typography,
 } from 'antd';
 import { CopyOutlined, ReloadOutlined, UndoOutlined } from '@ant-design/icons';
+import { Link, useSearchParams } from 'react-router-dom';
 import { adminApi } from '../../features/api/adminApi';
 import { usePermissions } from '../../features/auth/usePermissions';
 import {
@@ -310,6 +311,15 @@ export default function AiJobsPage() {
   const { message } = App.useApp();
   const canResolve = perms.can('ai_jobs', 'update');
 
+  // `?user_uid=` arrives from a user's detail page ("View AI jobs").
+  const [searchParams, setSearchParams] = useSearchParams();
+  const userUid = searchParams.get('user_uid') || undefined;
+  const clearUserUid = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete('user_uid');
+    setSearchParams(next, { replace: true });
+  };
+
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -331,13 +341,14 @@ export default function AiJobsPage() {
       operation_key: filters.operation_key,
       provider_id: filters.provider_id,
       user_id: filters.user_id.trim() || undefined,
+      user_uid: userUid,
       error_code: filters.error_code.trim() || undefined,
       from: filters.range?.[0]?.startOf('day').toISOString(),
       to: filters.range?.[1]?.endOf('day').toISOString(),
       limit: pageSize,
       offset: (page - 1) * pageSize,
     }),
-    [filters, page, pageSize],
+    [filters, userUid, page, pageSize],
   );
   const { data, isLoading, isFetching, refetch } = adminApi.endpoints.aiJobsList.useQuery(queryArg);
   const [resolveJob, { isLoading: resolveBusy }] = adminApi.endpoints.aiJobResolve.useMutation();
@@ -428,6 +439,7 @@ export default function AiJobsPage() {
   ];
 
   const filtersActive =
+    userUid ||
     filters.status.length ||
     filters.operation_key ||
     filters.provider_id ||
@@ -456,6 +468,7 @@ export default function AiJobsPage() {
               onClick={() => {
                 setFilters(EMPTY_FILTERS);
                 setPage(1);
+                if (userUid) clearUserUid();
               }}
             >
               Clear filters
@@ -468,6 +481,19 @@ export default function AiJobsPage() {
       </div>
 
       <Space wrap style={{ marginBottom: 16 }}>
+        {userUid && (
+          <Tag
+            closable
+            color="blue"
+            onClose={(e) => {
+              e.preventDefault();
+              clearUserUid();
+              setPage(1);
+            }}
+          >
+            <Link to={`/users/${encodeURIComponent(userUid)}`}>User {userUid.slice(0, 8)}…</Link>
+          </Tag>
+        )}
         <Select
           mode="multiple"
           allowClear

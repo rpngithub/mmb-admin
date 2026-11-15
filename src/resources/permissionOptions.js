@@ -21,6 +21,8 @@ export const PERMISSION_DOMAINS = [
   'coupons',
   // Top-up packs + the quota grants support issues against them.
   'quota_packs',
+  // A user's subscriptions, payments & invoices (read only).
+  'billing',
   // Industry page copy: shared defaults + per-industry overrides.
   'page_content',
   'settings',
