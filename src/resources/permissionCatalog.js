@@ -54,6 +54,16 @@ export const PERMISSION_CATALOG = [
     hint: 'packs & user quota grants — commerce, not content',
     actions: ALL,
   },
+  // A user's subscription, subscription history, payments, invoices and saved
+  // billing details (GSTIN, address) on the User Detail page. Commerce like
+  // quota_packs: super_admin only out of the box; content_admin gets a 403.
+  // Read-only — there are no admin writes on subscriptions or payments.
+  {
+    domain: 'billing',
+    label: 'User Billing',
+    hint: 'subscriptions, payments & invoices — commerce, not content',
+    actions: ['read'],
+  },
   // Notifications are split across TWO domains on purpose. `notifications`
   // covers the categories, the templates and the read-only delivery log — the
   // day-to-day copy editing a content_admin does. Sending a one-off blast to

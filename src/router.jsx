@@ -5,6 +5,7 @@ import RequirePermission from './features/auth/RequirePermission';
 import Login from './features/auth/Login';
 import Dashboard from './pages/Dashboard';
 import UsersPage from './pages/UsersPage';
+import UserDetailPage from './pages/users/UserDetailPage';
 import AdminsPage from './pages/AdminsPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TemplateFamilyPage from './pages/TemplateFamilyPage';
@@ -68,6 +69,14 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="users">
               <UsersPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="users/:uid"
+          element={
+            <RequirePermission domain="users">
+              <UserDetailPage />
             </RequirePermission>
           }
         />

@@ -15,6 +15,7 @@ function cleanParams(obj = {}) {
 const GENERIC_TAGS = RESOURCES.map((r) => r.key);
 const SPECIAL_TAGS = [
   'Users',
+  'UserBilling',
   'Admins',
   'ActivityLogs',
   'Templates',
@@ -215,6 +216,90 @@ export const adminApi = createApi({
         { type: 'Users', id: uid },
         { type: 'Users', id: 'LIST' },
       ],
+    }),
+
+    // ---- User detail page (all read-only) ---------------------------------
+    // Every tab query is `silent`: the tab renders its own 403 / 404 / error
+    // Result instead of the global toast, so one forbidden section never reads
+    // as the whole page failing. Billing endpoints (subscription, history,
+    // payments, documents) need `billing.read` — callers `skip` them without it.
+    userDetail: builder.query({
+      query: (uid) => ({ url: `/admin/users/${uid}` }),
+      extraOptions: { silent: true },
+      providesTags: (_r, _e, uid) => [{ type: 'Users', id: uid }],
+    }),
+    // Same shape the user's app gets from GET /subscriptions/me.
+    userSubscription: builder.query({
+      query: (uid) => ({ url: `/admin/users/${uid}/subscription` }),
+      extraOptions: { silent: true },
+      providesTags: (_r, _e, uid) => [{ type: 'UserBilling', id: uid }],
+    }),
+    userSubscriptions: builder.query({
+      query: ({ uid, ...params }) => ({
+        url: `/admin/users/${uid}/subscriptions`,
+        params: cleanParams(params),
+      }),
+      extraOptions: { silent: true },
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: (_r, _e, { uid }) => [{ type: 'UserBilling', id: uid }],
+    }),
+    userPayments: builder.query({
+      query: ({ uid, ...params }) => ({
+        url: `/admin/users/${uid}/payments`,
+        params: cleanParams(params),
+      }),
+      extraOptions: { silent: true },
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: (_r, _e, { uid }) => [{ type: 'UserBilling', id: uid }],
+    }),
+    // A print-ready HTML page, not JSON (errors still come back as JSON). Keyed
+    // by the PAYMENT uid. Never cached: the first open of an old payment assigns
+    // its invoice number, and the server sends `no-store`.
+    paymentDocument: builder.query({
+      query: ({ uid, type = 'invoice' }) => ({
+        url: `/admin/payments/${uid}/document`,
+        params: { type },
+        responseHandler: (res) =>
+          (res.headers.get('content-type') || '').includes('application/json')
+            ? res.json()
+            : res.text(),
+      }),
+      extraOptions: { silent: true },
+      keepUnusedDataFor: 0,
+    }),
+    userBusinesses: builder.query({
+      query: (uid) => ({ url: `/admin/users/${uid}/businesses` }),
+      extraOptions: { silent: true },
+      providesTags: (_r, _e, uid) => [{ type: 'Users', id: `${uid}:businesses` }],
+    }),
+    userProjects: builder.query({
+      query: ({ uid, ...params }) => ({
+        url: `/admin/users/${uid}/projects`,
+        params: cleanParams(params),
+      }),
+      extraOptions: { silent: true },
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: (_r, _e, { uid }) => [{ type: 'Users', id: `${uid}:projects` }],
+    }),
+    // One user's slice of the audit trail (user_uid + user_scope). A separate
+    // endpoint from activityLogsList only so it can be silent.
+    userActivity: builder.query({
+      query: (params = {}) => ({ url: '/admin/activity-logs', params: cleanParams(params) }),
+      extraOptions: { silent: true },
+      transformResponse: (data, meta) => ({
+        items: data || [],
+        total: meta?.total ?? (data?.length || 0),
+      }),
+      providesTags: [{ type: 'ActivityLogs', id: 'LIST' }],
     }),
 
     // ---- Admins (paginated, create + update) ------------------------------
@@ -935,7 +1020,11 @@ export const adminApi = createApi({
         body,
       }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { userUid }) => [{ type: 'QuotaGrant', id: userUid }],
+      // A grant moves the user's top-up balance on the Subscription & usage tab.
+      invalidatesTags: (_r, _e, { userUid }) => [
+        { type: 'QuotaGrant', id: userUid },
+        { type: 'UserBilling', id: userUid },
+      ],
     }),
     // Revoke — sets the grant to `revoked` and KEEPS the row as the audit
     // record. `uid` here is the GRANT's uid; `userUid` is carried only to
@@ -945,7 +1034,10 @@ export const adminApi = createApi({
     quotaGrantRevoke: builder.mutation({
       query: ({ uid }) => ({ url: `/admin/quota-grants/${uid}`, method: 'DELETE' }),
       extraOptions: { silent: true },
-      invalidatesTags: (_r, _e, { userUid }) => [{ type: 'QuotaGrant', id: userUid }],
+      invalidatesTags: (_r, _e, { userUid }) => [
+        { type: 'QuotaGrant', id: userUid },
+        { type: 'UserBilling', id: userUid },
+      ],
     }),
 
     // ---- Public config feed (cdn_base_url etc.) ---------------------------
@@ -2300,6 +2392,15 @@ export const {
   useUsersListQuery,
   useUserGetQuery,
   useUserUpdateStatusMutation,
+  // User detail page (read-only tabs)
+  useUserDetailQuery,
+  useUserSubscriptionQuery,
+  useUserSubscriptionsQuery,
+  useUserPaymentsQuery,
+  useLazyPaymentDocumentQuery,
+  useUserBusinessesQuery,
+  useUserProjectsQuery,
+  useUserActivityQuery,
   useAdminsListQuery,
   useAdminGetQuery,
   useAdminCreateMutation,
