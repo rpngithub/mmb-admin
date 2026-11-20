@@ -201,7 +201,16 @@ export const SCHEMA_CONTEXT_OPTIONS = [
   { value: 'project', label: 'Add project/design details' },
 ];
 
-export const SNAKE_CASE = /^[a-z][a-z0-9_]*$/;
+/** Input-schema field names: snake_case, at most 40 characters. */
+export const FIELD_NAME = /^[a-z][a-z0-9_]{0,39}$/;
+
+/**
+ * Operation keys: dot-separated snake_case segments, e.g. `image.standard`,
+ * `text.post.instagram`, `remove_background`. Max 60 characters. Checked on
+ * create only — the key is read-only afterwards.
+ */
+export const OPERATION_KEY = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$/;
+export const OPERATION_KEY_MAX = 60;
 
 const ROW_KEYS = ['type', 'required', 'min', 'max', 'values', 'default'];
 

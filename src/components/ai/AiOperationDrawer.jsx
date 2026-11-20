@@ -27,7 +27,9 @@ import {
   LEDGER_SOURCES,
   OPERATION_UNITS,
   SCHEMA_CONTEXT_OPTIONS,
-  SNAKE_CASE,
+  FIELD_NAME,
+  OPERATION_KEY,
+  OPERATION_KEY_MAX,
   applyServerErrors,
   formatNumber,
   multiplierValuesFor,
@@ -316,17 +318,34 @@ export default function AiOperationDrawer({ open, record, onClose }) {
             <Form.Item
               name="key"
               label="Key"
-              rules={[
-                { required: !isEdit, message: 'Key is required' },
-                { pattern: SNAKE_CASE, message: 'snake_case, e.g. remove_background' },
-              ]}
+              // Edit: the key is read-only and never sent, so it isn't validated
+              // (migration keys like `image.standard` must not block Save).
+              rules={
+                isEdit
+                  ? []
+                  : [
+                      { required: true, message: 'Key is required' },
+                      {
+                        max: OPERATION_KEY_MAX,
+                        message: `At most ${OPERATION_KEY_MAX} characters`,
+                      },
+                      {
+                        pattern: OPERATION_KEY,
+                        message: 'e.g. image.standard, text.post.instagram, remove_background',
+                      },
+                    ]
+              }
               extra={
                 isEdit
-                  ? 'Permanent — the app calls the operation by this key.'
-                  : 'Permanent once created: the app calls the operation by it.'
+                  ? 'Permanent: the app calls the operation by this key.'
+                  : 'Lowercase letters, digits and _, dot-separated. Permanent: the app calls the operation by this key.'
               }
             >
-              <Input disabled={isEdit} placeholder="remove_background" />
+              <Input
+                disabled={isEdit}
+                maxLength={isEdit ? undefined : OPERATION_KEY_MAX}
+                placeholder="image.standard"
+              />
             </Form.Item>
           </Col>
           <Col xs={24} md={12}>
@@ -409,7 +428,7 @@ export default function AiOperationDrawer({ open, record, onClose }) {
                           label="Name"
                           rules={[
                             { required: true, message: 'Required' },
-                            { pattern: SNAKE_CASE, message: 'snake_case' },
+                            { pattern: FIELD_NAME, message: 'snake_case, max 40 characters' },
                             {
                               validator: (_r, v) =>
                                 v && (rows || []).filter((r) => r?.name === v).length > 1
