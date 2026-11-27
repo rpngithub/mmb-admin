@@ -41,6 +41,7 @@ const SPECIAL_TAGS = [
   'AiOperation',
   'AiJob',
   'AiMargin',
+  'TemplateImport',
 ];
 
 // ---- AI section helpers -------------------------------------------------------
@@ -58,6 +59,30 @@ const AI_COST_TAGS = [
   { type: 'AiHealth', id: 'ALL' },
   { type: 'AiMargin', id: 'ALL' },
 ];
+
+// ---- Template bulk import helpers ---------------------------------------------
+
+/** Write a returned import REPORT into the `templateImportGet` cache. */
+async function upsertImportReport(_arg, { dispatch, queryFulfilled }) {
+  try {
+    const { data } = await queryFulfilled;
+    if (data?.uid && Array.isArray(data.items)) {
+      // eslint-disable-next-line no-use-before-define
+      dispatch(adminApi.util.upsertQueryData('templateImportGet', data.uid, data));
+    }
+  } catch {
+    /* the screen shows the error */
+  }
+}
+
+/** Merge one row's presign/complete answer into the cached report. */
+function patchImportItem(uid, row, patch) {
+  // eslint-disable-next-line no-use-before-define
+  return adminApi.util.updateQueryData('templateImportGet', uid, (draft) => {
+    const item = draft?.items?.find((i) => i.row === row);
+    if (item) Object.assign(item, patch);
+  });
+}
 
 /**
  * Which list tags a successful (committed) bulk import must invalidate, keyed by
@@ -1238,6 +1263,141 @@ export const adminApi = createApi({
     multipartAbort: builder.mutation({
       query: (body) => ({ url: '/admin/uploads/multipart/abort', method: 'POST', body }),
       extraOptions: { silent: true },
+    }),
+
+    // ---- Template bulk import (designs + versions from a folder) ------------
+    // The panel drives every step; the server keeps the state. Every write but
+    // presign/complete returns the full REPORT, which is written straight into
+    // the `templateImportGet` cache (upsert) — the import screen renders from
+    // that one entry. presign/complete answer for one row, patched into the
+    // cached report's items[]. All silent: the screen and the upload runner
+    // show their own errors (inline 400 details, 409s, per-row failures).
+    templateImportsList: builder.query({
+      query: (params = {}) => ({ url: '/admin/template-imports', params: cleanParams(params) }),
+      transformResponse: (data, meta) => ({
+        items: asList(data),
+        total: Number(meta?.total ?? (asList(data).length || 0)),
+      }),
+      providesTags: [{ type: 'TemplateImport', id: 'LIST' }],
+    }),
+    templateImportGet: builder.query({
+      query: (uid) => ({ url: `/admin/template-imports/${uid}` }),
+      extraOptions: { silent: true },
+      providesTags: (_r, _e, uid) => [{ type: 'TemplateImport', id: uid }],
+    }),
+    // body: { label?, manifest: "<manifest.csv text>" } → 201 + report
+    templateImportCreate: builder.mutation({
+      query: (body) => ({ url: '/admin/template-imports', method: 'POST', body }),
+      extraOptions: { silent: true },
+      onQueryStarted: upsertImportReport,
+      invalidatesTags: (_r, error) => (error ? [] : [{ type: 'TemplateImport', id: 'LIST' }]),
+    }),
+    // body: { items: [{ row, content, files: [{ name, size, content_type }] }] } (≤ 25 rows)
+    templateImportSendFiles: builder.mutation({
+      query: ({ uid, items }) => ({
+        url: `/admin/template-imports/${uid}/files`,
+        method: 'POST',
+        body: { items },
+      }),
+      extraOptions: { silent: true },
+      onQueryStarted: upsertImportReport,
+    }),
+    // body: { manifest: "<full manifest.csv text>" } → 200 + report. Only while
+    // draft / validated: every row is rebuilt from the new file (file checks
+    // thrown away, import back to draft). 400 = unusable manifest (details[]),
+    // 409 = the import has started / finished / was cancelled.
+    replaceTemplateImportManifest: builder.mutation({
+      query: ({ uid, manifest }) => ({
+        url: `/admin/template-imports/${uid}/manifest`,
+        method: 'PUT',
+        body: { manifest },
+      }),
+      extraOptions: { silent: true },
+      // Written straight into templateImportGet(uid) — no refetch.
+      onQueryStarted: upsertImportReport,
+    }),
+    templateImportStart: builder.mutation({
+      query: (uid) => ({ url: `/admin/template-imports/${uid}/start`, method: 'POST' }),
+      extraOptions: { silent: true },
+      onQueryStarted: upsertImportReport,
+      // Start creates unknown tags and the draft designs/versions.
+      invalidatesTags: (_r, error) =>
+        error
+          ? []
+          : [
+              { type: 'TemplateImport', id: 'LIST' },
+              { type: 'TemplateFamily', id: 'LIST' },
+              { type: 'Templates', id: 'LIST' },
+              { type: 'tags', id: 'LIST' },
+            ],
+    }),
+    // → { row, template_uid, files: [...], already_uploaded: [names], expires_in }
+    templateImportPresign: builder.mutation({
+      query: ({ uid, row }) => ({
+        url: `/admin/template-imports/${uid}/items/${row}/presign`,
+        method: 'POST',
+      }),
+      extraOptions: { silent: true },
+      async onQueryStarted({ uid, row }, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          dispatch(
+            patchImportItem(uid, row, {
+              stage: 'uploading',
+              ...(data?.template_uid ? { template_uid: data.template_uid } : {}),
+            }),
+          );
+        } catch {
+          /* the runner handles it */
+        }
+      },
+    }),
+    // → { row, stage, result, failed_stage, template_uid, errors, warnings }
+    templateImportComplete: builder.mutation({
+      query: ({ uid, row }) => ({
+        url: `/admin/template-imports/${uid}/items/${row}/complete`,
+        method: 'POST',
+      }),
+      extraOptions: { silent: true },
+      async onQueryStarted({ uid, row }, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          if (data) {
+            const patch = { ...data };
+            delete patch.row;
+            dispatch(patchImportItem(uid, row, patch));
+          }
+        } catch {
+          /* the runner handles it */
+        }
+      },
+    }),
+    templateImportFinalize: builder.mutation({
+      query: (uid) => ({ url: `/admin/template-imports/${uid}/finalize`, method: 'POST' }),
+      extraOptions: { silent: true },
+      onQueryStarted: upsertImportReport,
+      invalidatesTags: (_r, error) =>
+        error
+          ? []
+          : [
+              { type: 'TemplateImport', id: 'LIST' },
+              { type: 'TemplateFamily', id: 'LIST' },
+              { type: 'Templates', id: 'LIST' },
+            ],
+    }),
+    templateImportCancel: builder.mutation({
+      query: (uid) => ({ url: `/admin/template-imports/${uid}`, method: 'DELETE' }),
+      extraOptions: { silent: true },
+      onQueryStarted: upsertImportReport,
+      invalidatesTags: (_r, error, uid) =>
+        error
+          ? []
+          : [
+              { type: 'TemplateImport', id: 'LIST' },
+              { type: 'TemplateImport', id: uid },
+              { type: 'TemplateFamily', id: 'LIST' },
+              { type: 'Templates', id: 'LIST' },
+            ],
     }),
 
     // ---- FAQ + FAQ categories (merged screen) -----------------------------
@@ -2474,6 +2634,17 @@ export const {
   useMultipartPresignPartsMutation,
   useMultipartCompleteMutation,
   useMultipartAbortMutation,
+  // Template bulk import
+  useTemplateImportsListQuery,
+  useTemplateImportGetQuery,
+  useTemplateImportCreateMutation,
+  useTemplateImportSendFilesMutation,
+  useReplaceTemplateImportManifestMutation,
+  useTemplateImportStartMutation,
+  useTemplateImportPresignMutation,
+  useTemplateImportCompleteMutation,
+  useTemplateImportFinalizeMutation,
+  useTemplateImportCancelMutation,
   // Variants + brand series relations
   useVariantCreateMutation,
   useVariantUpdateMutation,

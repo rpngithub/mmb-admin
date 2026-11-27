@@ -62,7 +62,20 @@ function saveBlob(blob, filename) {
  */
 export async function downloadTemplate({ entity, example = false, token }) {
   const qs = example ? '?example=1' : '';
-  const res = await fetch(`${API_ROOT}/admin/imports/${entity}/template${qs}`, {
+  return downloadCsv({
+    path: `/admin/imports/${entity}/template${qs}`,
+    token,
+    fallbackName: fallbackFilename(entity, example),
+  });
+}
+
+/**
+ * Download any authed CSV endpoint (`path` is relative to /api/v1) as a file.
+ * Same contract as downloadTemplate: raw CSV on success, JSON error envelope
+ * on failure (its `error.message` is thrown).
+ */
+export async function downloadCsv({ path, token, fallbackName = 'download.csv' }) {
+  const res = await fetch(`${API_ROOT}${path}`, {
     method: 'GET',
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
@@ -80,8 +93,6 @@ export async function downloadTemplate({ entity, example = false, token }) {
   }
 
   const blob = await res.blob();
-  const filename =
-    filenameFromDisposition(res.headers.get('Content-Disposition')) ||
-    fallbackFilename(entity, example);
+  const filename = filenameFromDisposition(res.headers.get('Content-Disposition')) || fallbackName;
   saveBlob(blob, filename);
 }

@@ -28,6 +28,7 @@ import {
   RobotOutlined,
   HeartOutlined,
   CloudServerOutlined,
+  CloudUploadOutlined,
   WalletOutlined,
   ApartmentOutlined,
   UnorderedListOutlined,
@@ -90,6 +91,14 @@ const SPECIAL_ITEMS = [
     permission: 'templates',
     group: 'Catalog',
     icon: <FileImageOutlined />,
+  },
+  // Many designs + their language × size versions from a prepared folder.
+  {
+    key: '/template-imports',
+    label: 'Template Import',
+    permission: 'templates',
+    group: 'Catalog',
+    icon: <CloudUploadOutlined />,
   },
   // Frames (the branded borders users buy one at a time) and the store's
   // category chips — one permission domain, two screens.
