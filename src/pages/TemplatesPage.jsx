@@ -8,6 +8,7 @@ import {
   DeleteOutlined,
   PictureOutlined,
   InfoCircleOutlined,
+  CloudUploadOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useAppDispatch } from '../app/hooks';
@@ -385,6 +386,9 @@ export default function TemplatesPage() {
         <Space wrap>
           <Button icon={<ReloadOutlined />} onClick={refetch} loading={isFetching}>
             Reload
+          </Button>
+          <Button icon={<CloudUploadOutlined />} onClick={() => navigate('/template-imports')}>
+            Bulk import
           </Button>
           {canCreate && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/templates/new')}>

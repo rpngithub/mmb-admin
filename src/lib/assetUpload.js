@@ -230,7 +230,7 @@ async function confirmOne(confirm, key) {
  * multipart). Resolves with the response ETag (needed for multipart complete).
  * A 403 is flagged — from a size-bound URL it is SignatureDoesNotMatch.
  */
-function putWithProgress(url, body, headers, { onProgress, registerXhr } = {}) {
+export function putWithProgress(url, body, headers, { onProgress, registerXhr } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', url, true);

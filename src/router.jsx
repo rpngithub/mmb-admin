@@ -9,6 +9,8 @@ import UserDetailPage from './pages/users/UserDetailPage';
 import AdminsPage from './pages/AdminsPage';
 import TemplatesPage from './pages/TemplatesPage';
 import TemplateFamilyPage from './pages/TemplateFamilyPage';
+import TemplateImportsPage from './pages/TemplateImportsPage';
+import TemplateImportPage from './pages/TemplateImportPage';
 import FramesPage from './pages/FramesPage';
 import FramePage from './pages/FramePage';
 import FrameCategoriesPage from './pages/FrameCategoriesPage';
@@ -102,6 +104,25 @@ export default function AppRouter() {
           element={
             <RequirePermission domain="templates">
               <TemplateFamilyPage />
+            </RequirePermission>
+          }
+        />
+        {/* Template bulk import: history + one import (`new` starts one).
+            Reading needs templates.read; every write needs templates.create
+            (checked on the buttons). */}
+        <Route
+          path="template-imports"
+          element={
+            <RequirePermission domain="templates">
+              <TemplateImportsPage />
+            </RequirePermission>
+          }
+        />
+        <Route
+          path="template-imports/:uid"
+          element={
+            <RequirePermission domain="templates">
+              <TemplateImportPage />
             </RequirePermission>
           }
         />
