@@ -142,10 +142,76 @@ function TextResult({ text }) {
   );
 }
 
-/** A done job's result: { text } for text operations, { files } for images. */
+/** A result file's URL — the key name isn't pinned down, so take the first one present. */
+const fileUrl = (f) => f?.url || f?.signed_url || f?.public_url || f?.download_url || null;
+const fileMime = (f) => String(f?.mime || f?.content_type || '');
+
+function fmtDurationMs(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const s = Math.round(n / 100) / 10;
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+/** result.files: audio → <audio> player, image → thumbnail, else a link. */
+function FilesResult({ files }) {
+  return (
+    <Row gutter={[12, 12]}>
+      {files.map((f, i) => {
+        const url = fileUrl(f);
+        const mime = fileMime(f);
+        const duration = fmtDurationMs(f?.duration_ms);
+        let body;
+        if (url && mime.startsWith('audio/')) {
+          body = <audio controls preload="none" src={url} style={{ width: '100%' }} />;
+        } else if (url && mime.startsWith('image/')) {
+          body = (
+            <a href={url} target="_blank" rel="noreferrer">
+              <img
+                src={url}
+                alt={`Result ${i + 1}`}
+                style={{
+                  maxWidth: '100%',
+                  maxHeight: 240,
+                  display: 'block',
+                  // Checkerboard so transparent (background-removed) results read as such.
+                  background:
+                    'repeating-conic-gradient(#e5e5e5 0% 25%, #fff 0% 50%) 50% / 16px 16px',
+                }}
+              />
+            </a>
+          );
+        } else if (url) {
+          body = (
+            <a href={url} target="_blank" rel="noreferrer">
+              Open file
+            </a>
+          );
+        } else {
+          body = <Text type="secondary">No URL on this file</Text>;
+        }
+        return (
+          <Col xs={24} md={12} key={i}>
+            <Card size="small">
+              {body}
+              <Space size={4} wrap style={{ marginTop: 6 }}>
+                {mime && <Tag>{mime}</Tag>}
+                {duration && <Tag>{duration}</Tag>}
+              </Space>
+            </Card>
+          </Col>
+        );
+      })}
+    </Row>
+  );
+}
+
+/** A done job's result: { text } for text operations, { files } for images / audio. */
 function JobResult({ result }) {
   if (!result) return <Text type="secondary">—</Text>;
   if (result.text) return <TextResult text={result.text} />;
+  if (Array.isArray(result.files) && result.files.length) return <FilesResult files={result.files} />;
   return <JsonBlock value={result} />;
 }
 
@@ -171,14 +237,25 @@ function JobDrawer({ uid, onClose, onResolve, canResolve }) {
       title: 'Detail',
       dataIndex: 'error_detail',
       key: 'error_detail',
-      render: (v) =>
-        v ? (
+      render: (v) => {
+        if (!v) return '—';
+        // Background removal whose result came back opaque: job fails, credits refunded.
+        if (/no transparent background/i.test(String(v))) {
+          return (
+            <Tooltip title="The background-removal result had no transparency, so the job failed and the credits were refunded.">
+              <Space size={4}>
+                <Tag color="orange">not transparent</Tag>
+                <Text style={{ fontSize: 12 }}>{String(v)}</Text>
+              </Space>
+            </Tooltip>
+          );
+        }
+        return (
           <Text style={{ fontSize: 12 }} ellipsis={{ tooltip: String(v) }}>
             {String(v)}
           </Text>
-        ) : (
-          '—'
-        ),
+        );
+      },
     },
     { title: 'Started', dataIndex: 'started_at', key: 'started_at', render: formatDateTime },
     {
@@ -284,7 +361,7 @@ function JobDrawer({ uid, onClose, onResolve, canResolve }) {
               },
               { key: 'charge', label: 'Charge split', children: <JsonBlock value={job.charge_split} /> },
               { key: 'refund', label: 'Refund split', children: <JsonBlock value={job.refund_split} /> },
-              ...(job.result?.text
+              ...(job.result?.text || (Array.isArray(job.result?.files) && job.result.files.length)
                 ? [{ key: 'result', label: 'Result (raw JSON)', children: <JsonBlock value={job.result} /> }]
                 : []),
               {

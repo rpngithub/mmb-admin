@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   App,
   Button,
   Col,
@@ -29,19 +30,136 @@ import AiServerErrors from './AiServerErrors';
 
 const { Text, Paragraph } = Typography;
 
-/** fixed_params keys a token-billed (Google) route needs. The server's 400 names a missing / wrong one. */
-const TOKEN_ROUTE_KEYS = [
-  ['system_prompt', 'required'],
-  ['output_schema', 'required — JSON Schema with "type": "object"'],
-  ['max_output_tokens', 'required'],
-  ['thinking', 'required — {"level":"minimal|low|medium|high"} for Gemini 3+, {"budget":N} for Gemini 2.x'],
-  ['input_cents_per_mtok', 'required'],
-  ['output_cents_per_mtok', 'required'],
-  ['prompt_version', 'optional'],
-  ['user_template', 'optional — {{field}} placeholders must be operation fields'],
-  ['temperature', 'optional'],
-  ['safety_settings', 'optional'],
+/**
+ * fixed_params keys a token-billed (Google) route takes, per `output` mode.
+ * The server's 400 names a missing / wrong one; this is just the cheat sheet.
+ */
+const GOOGLE_ROUTE_KEYS = {
+  json: [
+    ['output', 'optional — "json" (default) | "image" | "audio"'],
+    ['system_prompt', 'required'],
+    ['output_schema', 'required — JSON Schema with "type": "object"; strings may use "pattern", arrays "uniqueItems"'],
+    ['max_output_tokens', 'required'],
+    ['thinking', 'required — {"level":"minimal|low|medium|high"} for Gemini 3+, {"budget":N} for Gemini 2.x'],
+    ['input_cents_per_mtok', 'required'],
+    ['output_cents_per_mtok', 'required'],
+    ['prompt_version', 'optional'],
+    ['user_template', 'optional — template syntax below'],
+    ['temperature', 'optional'],
+    ['safety_settings', 'optional'],
+  ],
+  image: [
+    ['output', '"image" — sent through Google’s Interactions API'],
+    ['system_prompt', 'optional — sent as the first text block'],
+    ['user_template', 'template syntax below'],
+    ['aspect_ratio_map', 'e.g. { "4:5": "4:5" } — our value → Google’s'],
+    ['image_size', '"1K" | "2K" | "4K" (uppercase K)'],
+    ['image_mime', '"image/png" (default) | "image/jpeg"'],
+    ['api_revision', 'optional — a date, sent as the Api-Revision header'],
+    ['input_cents_per_mtok / output_cents_per_mtok', 'the token rates, as on json routes'],
+  ],
+  audio: [
+    ['output', '"audio" — sent through Google’s Interactions API'],
+    ['user_template', 'the transcript, spoken word for word (default {{text}} — keep it to the text alone)'],
+    ['style_template', 'speaking style, e.g. "{{tone}} tone, {{pace}} pace"'],
+    ['voice_map', '{ "<our voice value>": "<Google voice>" } — or a fixed "voice"'],
+    ['voice', 'fixed Google voice (instead of voice_map)'],
+    ['input_cents_per_mtok', 'required'],
+    ['output_cents_per_mtok', 'required'],
+  ],
+};
+
+/** Keys the server refuses on Google image / audio routes. */
+const GOOGLE_FORBIDDEN = {
+  image: ['output_schema', 'max_output_tokens', 'thinking', 'temperature', 'safety_settings'],
+  audio: ['system_prompt', 'output_schema', 'max_output_tokens', 'thinking', 'temperature', 'safety_settings'],
+};
+
+const GOOGLE_IMAGE_MODELS = [
+  'gemini-nano-banana-2.1',
+  'gemini-3.1-flash-image',
+  'gemini-3.1-flash-lite-image',
+  'gemini-3-pro-image',
+  'gemini-2.5-flash-image',
 ];
+const NANO_BANANA_RATIOS = '1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, 21:9';
+const GOOGLE_VOICES = [
+  'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
+  'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
+  'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird',
+  'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+];
+
+const MAGNIFIC_ROUTE_KEYS = [
+  ['prompt_template', 'text-to-image models: the MMB prompt. When set it IS the prompt — the operation needs no "prompt" field'],
+  ['num_images', 'fixed count per request: 1..the model’s max (gpt-image-2-5: 10; others: 1)'],
+];
+/** Per-model num_images ceiling; anything not listed is 1. */
+const MAGNIFIC_MAX_IMAGES = { 'gpt-image-2-5': 10 };
+
+/** Shared {{…}} syntax for Magnific prompt_template and Google user_template. */
+function TemplateSyntaxHelp() {
+  return (
+    <div style={{ marginTop: 6 }}>
+      Template syntax: <Text code>{'{{field}}'}</Text>, <Text code>{'{{?field}}…{{/field}}'}</Text>{' '}
+      (only when the field has a value), <Text code>{'{{^field}}…{{/field}}'}</Text> (only when
+      empty). Reserved: <Text code>{'{{input_json}}'}</Text>, <Text code>{'{{brand_context}}'}</Text>,{' '}
+      <Text code>{'{{language}}'}</Text>, <Text code>{'{{industry}}'}</Text>,{' '}
+      <Text code>{'{{location}}'}</Text> — the last three and brand_context need the operation to
+      declare context.
+    </div>
+  );
+}
+
+const KeyList = ({ keys }) => (
+  <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+    {keys.map(([k, note]) => (
+      <li key={k}>
+        <Text code>{k}</Text> — {note}
+      </li>
+    ))}
+  </ul>
+);
+
+/** Client-side hints for fixed_params; the server still has the final word. */
+function fixedParamsWarnings({ params, google, magnific, model }) {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return [];
+  const out = [];
+  if (google) {
+    const mode = params.output ?? 'json';
+    if (!['json', 'image', 'audio'].includes(mode)) {
+      out.push(`output must be "json", "image" or "audio" (got ${JSON.stringify(mode)})`);
+    }
+    for (const k of GOOGLE_FORBIDDEN[mode] || []) {
+      if (params[k] !== undefined) out.push(`"${k}" is not allowed on an ${mode} route`);
+    }
+    if (mode === 'image' && params.image_size !== undefined && !['1K', '2K', '4K'].includes(params.image_size)) {
+      out.push('image_size must be "1K", "2K" or "4K" — Google refuses a lowercase k');
+    }
+    if (mode === 'image' && params.image_mime !== undefined && !['image/png', 'image/jpeg'].includes(params.image_mime)) {
+      out.push('image_mime must be "image/png" or "image/jpeg"');
+    }
+    if (mode === 'audio' && params.voice !== undefined && params.voice_map !== undefined) {
+      out.push('Give either "voice" or "voice_map", not both');
+    }
+    if (mode === 'audio') {
+      const voices = [
+        ...(params.voice !== undefined ? [params.voice] : []),
+        ...(params.voice_map && typeof params.voice_map === 'object' ? Object.values(params.voice_map) : []),
+      ];
+      const unknown = voices.filter((v) => !GOOGLE_VOICES.includes(v));
+      if (unknown.length) out.push(`Not a Google voice: ${unknown.join(', ')}`);
+    }
+  }
+  if (magnific && params.num_images !== undefined) {
+    const max = MAGNIFIC_MAX_IMAGES[model] ?? 1;
+    const n = params.num_images;
+    if (!Number.isInteger(n) || n < 1 || n > max) {
+      out.push(`num_images must be a whole number from 1 to ${max}${model ? ` for ${model}` : ''}`);
+    }
+  }
+  return out;
+}
 
 const FALLBACK_HELP =
   "On the primary route(s): may jobs move to a later-priority route? With several primary routes, ONE switched off forbids it for all. It holds even while the primary's provider is disabled or keyless — jobs wait, and new requests get 'AI unavailable'.";
@@ -115,7 +233,28 @@ export default function AiRouteDrawer({ open, operation, record, onClose }) {
   const adapter = provider?.key ? adapters.find((a) => a.key === provider.key) : null;
   const models = Array.isArray(adapter?.models) ? adapter.models : null;
   const tokenBilled = Boolean(adapter) && adapter.models === null;
+  const magnific = String(provider?.key || '').toLowerCase() === 'magnific';
   const currentModel = Form.useWatch('model', form);
+  const fixedParamsText = Form.useWatch('fixed_params', form);
+  const parsedParams = useMemo(() => {
+    if (!fixedParamsText || !String(fixedParamsText).trim()) return {};
+    try {
+      return JSON.parse(fixedParamsText);
+    } catch {
+      return null;
+    }
+  }, [fixedParamsText]);
+  const googleOutput =
+    parsedParams && typeof parsedParams === 'object' && ['image', 'audio'].includes(parsedParams.output)
+      ? parsedParams.output
+      : 'json';
+  const paramWarnings = fixedParamsWarnings({
+    params: parsedParams,
+    google: tokenBilled,
+    magnific,
+    model: currentModel,
+  });
+  const removeBackground = magnific && String(currentModel || '').includes('remove-background');
   const modelOptions = models
     ? [...new Set([...models, ...(currentModel && !models.includes(currentModel) ? [currentModel] : [])])].map(
         (m) => ({ value: m, label: models.includes(m) ? m : `${m} (not in adapter list)` }),
@@ -231,14 +370,33 @@ export default function AiRouteDrawer({ open, operation, record, onClose }) {
           extra={
             tokenBilled ? (
               <div>
-                Merged into every request sent through this route. Keys for this provider:
-                <ul style={{ margin: '4px 0 0', paddingLeft: 20 }}>
-                  {TOKEN_ROUTE_KEYS.map(([k, note]) => (
-                    <li key={k}>
-                      <Text code>{k}</Text> — {note}
-                    </li>
-                  ))}
-                </ul>
+                Merged into every request sent through this route. Keys for a{' '}
+                <Text strong>{googleOutput}</Text> route:
+                <KeyList keys={GOOGLE_ROUTE_KEYS[googleOutput]} />
+                {googleOutput === 'image' && (
+                  <div style={{ marginTop: 6 }}>
+                    Models: {GOOGLE_IMAGE_MODELS.join(', ')}. Nano
+                    Banana 2.1 ratios: {NANO_BANANA_RATIOS}; up to 14 reference images.
+                  </div>
+                )}
+                {googleOutput === 'audio' && (
+                  <div style={{ marginTop: 6 }}>
+                    Google voices (gender not documented; language detected from the text):{' '}
+                    {GOOGLE_VOICES.join(', ')}. Audio routes take no media fields.
+                  </div>
+                )}
+                {googleOutput !== 'audio' && (
+                  <div style={{ marginTop: 6 }}>
+                    The operation’s media / media_list fields are sent to the model as images.
+                  </div>
+                )}
+                <TemplateSyntaxHelp />
+              </div>
+            ) : magnific ? (
+              <div>
+                Merged into every request sent through this route. Magnific keys:
+                <KeyList keys={MAGNIFIC_ROUTE_KEYS} />
+                <TemplateSyntaxHelp />
               </div>
             ) : (
               'A JSON object merged into every request sent through this route.'
@@ -254,6 +412,30 @@ export default function AiRouteDrawer({ open, operation, record, onClose }) {
             />
           </Form.Item>
         </Form.Item>
+        {paramWarnings.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="The server will likely refuse these fixed params"
+            description={
+              <ul style={{ margin: 0, paddingLeft: 20 }}>
+                {paramWarnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            }
+          />
+        )}
+        {removeBackground && (
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Background removal"
+            description="Inputs must be PNG, JPEG or WEBP up to 20 MB (else 400 at submit). A result without transparency fails the job with TASK_FAILED (“result has no transparent background” in the attempt row) and the credits are refunded."
+          />
+        )}
         <Form.Item
           name="provider_units"
           label="Provider units"

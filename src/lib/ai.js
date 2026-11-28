@@ -212,33 +212,143 @@ export const FIELD_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 export const OPERATION_KEY = /^[a-z][a-z0-9_]*(\.[a-z0-9_]+)*$/;
 export const OPERATION_KEY_MAX = 60;
 
-const ROW_KEYS = ['type', 'required', 'min', 'max', 'values', 'default'];
+const ROW_KEYS = ['type', 'required', 'min', 'max', 'values', 'default', 'max_words', 'options', 'match'];
+
+/** input_schema.context_rules defaults (server side). */
+export const CONTEXT_RULE_DEFAULTS = { need_subject: true, need_industry: false };
+
+/** Parse JSON text, or return `fallback` when blank / invalid. */
+export function parseJsonSafe(text, fallback = undefined) {
+  if (text === undefined || text === null || String(text).trim() === '') return fallback;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+/** An enum row's option objects (options mode), or [] when blank / invalid. */
+export function enumOptionsOf(row) {
+  if (row?.enum_mode !== 'options') return [];
+  const parsed = parseJsonSafe(row.options_json, []);
+  return Array.isArray(parsed) ? parsed.filter((o) => o && typeof o === 'object') : [];
+}
+
+/** The plain values an enum row accepts, whichever way they're given. */
+export function enumValuesOf(row) {
+  if (!row || row.type !== 'enum') return [];
+  if (row.enum_mode === 'options') {
+    return enumOptionsOf(row)
+      .map((o) => o.value)
+      .filter((v) => v !== undefined && v !== null)
+      .map(String);
+  }
+  return (row.values || []).map(String);
+}
+
+/** Form rule for an enum's `options` JSON: array of objects, unique string `value`s. */
+export const enumOptionsRule = {
+  validator: (_r, text) => {
+    if (text === undefined || text === null || String(text).trim() === '') {
+      return Promise.reject(new Error('An enum needs at least one option'));
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return Promise.reject(new Error('Not valid JSON'));
+    }
+    if (!Array.isArray(parsed) || parsed.length === 0) {
+      return Promise.reject(new Error('Must be a non-empty JSON array of { "value": …, … } objects'));
+    }
+    const seen = new Set();
+    for (const [i, o] of parsed.entries()) {
+      if (!o || typeof o !== 'object' || Array.isArray(o)) {
+        return Promise.reject(new Error(`Item ${i + 1} is not an object`));
+      }
+      if (typeof o.value !== 'string' || !o.value) {
+        return Promise.reject(new Error(`Item ${i + 1}: "value" must be a non-empty string`));
+      }
+      if (seen.has(o.value)) return Promise.reject(new Error(`Duplicate value "${o.value}"`));
+      seen.add(o.value);
+    }
+    return Promise.resolve();
+  },
+};
+
+/**
+ * Problems with an enum's `match` ({ option attribute: other field }), checked
+ * against the row's options and the other field names. [] = fine.
+ */
+export function matchProblems(row, fieldNames) {
+  const text = row?.match_json;
+  if (text === undefined || text === null || String(text).trim() === '') return [];
+  const match = parseJsonSafe(text);
+  if (!match || typeof match !== 'object' || Array.isArray(match)) {
+    return ['Must be a JSON object, e.g. { "gender": "voice_gender" }'];
+  }
+  const out = [];
+  const options = enumOptionsOf(row);
+  for (const [attr, field] of Object.entries(match)) {
+    if (typeof field !== 'string' || !field) out.push(`"${attr}" must name another field`);
+    else if (field === row.name) out.push(`"${attr}" points at this field itself`);
+    else if (!fieldNames.includes(field)) out.push(`"${attr}" → no field named "${field}"`);
+    const missing = options.filter((o) => o[attr] === undefined).map((o) => o.value);
+    if (missing.length) out.push(`options without "${attr}": ${missing.join(', ')}`);
+  }
+  return out;
+}
 
 /** API input_schema → editable rows. Unknown per-field keys ride along in `extra`. */
 export function schemaToRows(schema) {
   const fields = schema?.fields && typeof schema.fields === 'object' ? schema.fields : {};
-  return Object.entries(fields).map(([name, def]) => ({
-    name,
-    type: def?.type || 'string',
-    required: Boolean(def?.required),
-    min: def?.min ?? null,
-    max: def?.max ?? null,
-    values: Array.isArray(def?.values) ? def.values.map(String) : [],
-    default: def?.default === undefined || def?.default === null ? undefined : def.default,
-    extra: Object.fromEntries(Object.entries(def || {}).filter(([k]) => !ROW_KEYS.includes(k))),
-  }));
+  return Object.entries(fields).map(([name, def]) => {
+    const hasOptions = Array.isArray(def?.options);
+    return {
+      name,
+      type: def?.type || 'string',
+      required: Boolean(def?.required),
+      min: def?.min ?? null,
+      max: def?.max ?? null,
+      max_words: def?.max_words ?? null,
+      values: Array.isArray(def?.values) ? def.values.map(String) : [],
+      enum_mode: hasOptions ? 'options' : 'values',
+      options_json: hasOptions ? JSON.stringify(def.options, null, 2) : '',
+      match_json:
+        def?.match && typeof def.match === 'object' ? JSON.stringify(def.match, null, 2) : '',
+      default: def?.default === undefined || def?.default === null ? undefined : def.default,
+      extra: Object.fromEntries(Object.entries(def || {}).filter(([k]) => !ROW_KEYS.includes(k))),
+    };
+  });
 }
 
 /** input_schema.context as a clean list. */
 export const schemaContext = (schema) =>
   Array.isArray(schema?.context) ? schema.context.filter((c) => typeof c === 'string') : [];
 
+/** input_schema.one_of as a clean list of groups (each a list of field names). */
+export const schemaOneOf = (schema) =>
+  Array.isArray(schema?.one_of)
+    ? schema.one_of.filter(Array.isArray).map((g) => g.filter((f) => typeof f === 'string'))
+    : [];
+
+/** input_schema.context_rules with the server defaults filled in. */
+export const schemaContextRules = (schema) => ({
+  ...CONTEXT_RULE_DEFAULTS,
+  ...(schema?.context_rules && typeof schema.context_rules === 'object' ? schema.context_rules : {}),
+});
+
 /**
- * Editable rows (+ context) → API input_schema. Drops props that don't apply to
- * the type; keeps unknown keys from the stored schema (`base`) untouched.
+ * Editable rows (+ context, one_of, context_rules) → API input_schema. Drops
+ * props that don't apply to the type; keeps unknown keys from the stored
+ * schema (`base`) untouched.
+ *
+ * context_rules is sent only when the operation has context AND it either
+ * differs from the defaults or was already stored.
  */
-export function rowsToSchema(rows, context, base) {
+export function rowsToSchema(rows, context, base, { oneOf, contextRules } = {}) {
   const fields = {};
+  const names = new Set((rows || []).map((r) => r?.name).filter(Boolean));
   for (const row of rows || []) {
     if (!row?.name) continue;
     const def = { ...(row.extra || {}), type: row.type };
@@ -247,7 +357,16 @@ export function rowsToSchema(rows, context, base) {
       if (toNum(row.min) !== null) def.min = toNum(row.min);
       if (toNum(row.max) !== null) def.max = toNum(row.max);
     }
-    if (row.type === 'enum') def.values = (row.values || []).map(String);
+    if (row.type === 'string' && toNum(row.max_words) !== null) def.max_words = toNum(row.max_words);
+    if (row.type === 'enum') {
+      if (row.enum_mode === 'options') {
+        def.options = parseJsonSafe(row.options_json, []);
+        const match = parseJsonSafe(row.match_json);
+        if (match && typeof match === 'object' && Object.keys(match).length) def.match = match;
+      } else {
+        def.values = (row.values || []).map(String);
+      }
+    }
     if (row.default !== undefined && row.default !== null && row.default !== '') {
       if (row.type === 'integer') def.default = toNum(row.default);
       else if (row.type === 'boolean') def.default = row.default === true || row.default === 'true';
@@ -257,17 +376,33 @@ export function rowsToSchema(rows, context, base) {
   }
   const out = {};
   for (const [k, v] of Object.entries(base || {})) {
-    if (k !== 'fields' && k !== 'context') out[k] = v;
+    if (!['fields', 'context', 'one_of', 'context_rules'].includes(k)) out[k] = v;
   }
   out.fields = fields;
   if (context?.length) out.context = [...context];
+
+  const groups = (oneOf || [])
+    .map((g) => (Array.isArray(g) ? g.filter((f) => names.has(f)) : []))
+    .filter((g) => g.length);
+  if (groups.length) out.one_of = groups;
+
+  if (context?.length && contextRules) {
+    const rules = {
+      need_subject: contextRules.need_subject !== false,
+      need_industry: Boolean(contextRules.need_industry),
+    };
+    const isDefault =
+      rules.need_subject === CONTEXT_RULE_DEFAULTS.need_subject &&
+      rules.need_industry === CONTEXT_RULE_DEFAULTS.need_industry;
+    if (!isDefault || base?.context_rules) out.context_rules = rules;
+  }
   return out;
 }
 
 /** The values a multiplier can be keyed on for a schema row. */
 export function multiplierValuesFor(row) {
   if (!row) return [];
-  if (row.type === 'enum') return (row.values || []).map(String);
+  if (row.type === 'enum') return enumValuesOf(row);
   if (row.type === 'boolean') return ['true', 'false'];
   return [];
 }
