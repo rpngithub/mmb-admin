@@ -13,6 +13,7 @@ import {
   Input,
   InputNumber,
   Row,
+  Segmented,
   Select,
   Space,
   Switch,
@@ -31,11 +32,16 @@ import {
   OPERATION_KEY,
   OPERATION_KEY_MAX,
   applyServerErrors,
+  enumOptionsRule,
+  enumValuesOf,
   formatNumber,
+  matchProblems,
   multiplierValuesFor,
   previewPrice,
   rowsToSchema,
   schemaContext,
+  schemaContextRules,
+  schemaOneOf,
   schemaToRows,
   toNum,
 } from '../../lib/ai';
@@ -53,7 +59,15 @@ const FORM_FIELDS = [
   'is_active',
   'plan_ids',
   'context',
+  'one_of',
+  'context_rules',
 ];
+
+const OPTIONS_PLACEHOLDER = `[
+  { "value": "asha", "label": "Asha", "gender": "female", "languages": ["en", "hi"] }
+]`;
+
+const monoArea = { fontFamily: 'monospace', fontSize: 12 };
 
 const HAS_MIN_MAX = new Set(['integer', 'string', 'media_list']);
 /** Types with no default value control. */
@@ -88,7 +102,7 @@ function DefaultInput({ row, ...rest }) {
       return (
         <Select
           allowClear
-          options={(row.values || []).map((v) => ({ value: v, label: v }))}
+          options={enumValuesOf(row).map((v) => ({ value: v, label: v }))}
           {...rest}
         />
       );
@@ -109,7 +123,7 @@ function SampleInput({ row, value, onChange }) {
         onChange={onChange}
         allowClear
         placeholder={row.default !== undefined ? `default: ${row.default}` : 'pick'}
-        options={(row.values || []).map((v) => ({ value: v, label: v }))}
+        options={enumValuesOf(row).map((v) => ({ value: v, label: v }))}
       />
     );
   }
@@ -190,6 +204,8 @@ export default function AiOperationDrawer({ open, record, onClose }) {
         plan_ids: (record.plans || []).map((p) => p.id).filter((id) => id != null),
         schema_rows: schemaToRows(record.input_schema),
         context: schemaContext(record.input_schema),
+        one_of: schemaOneOf(record.input_schema),
+        context_rules: schemaContextRules(record.input_schema),
         units_from: record.price_rules?.units_from || undefined,
         multiplier_fields: Object.keys(multipliers),
         multipliers,
@@ -202,6 +218,8 @@ export default function AiOperationDrawer({ open, record, onClose }) {
         plan_ids: [],
         schema_rows: [],
         context: [],
+        one_of: [],
+        context_rules: schemaContextRules(null),
         multiplier_fields: [],
         multipliers: {},
       });
@@ -214,8 +232,11 @@ export default function AiOperationDrawer({ open, record, onClose }) {
   const unitsFrom = Form.useWatch('units_from', form);
   const credits = Form.useWatch('credits', form);
   const unit = Form.useWatch('unit', form);
+  const context = Form.useWatch('context', form);
+  const hasContext = (context || []).length > 0;
 
   const validRows = useMemo(() => (rows || []).filter((r) => r?.name), [rows]);
+  const fieldNames = validRows.map((r) => r.name);
   const rowByName = useMemo(() => new Map(validRows.map((r) => [r.name, r])), [validRows]);
   const integerFields = validRows.filter((r) => r.type === 'integer');
   const multiplierCandidates = validRows.filter(
@@ -277,7 +298,10 @@ export default function AiOperationDrawer({ open, record, onClose }) {
       is_active: Boolean(values.is_active),
       // Replaces the whole list; [] = every plan (Free and the access pass too).
       plan_ids: (values.plan_ids || []).map((id) => toNum(id) ?? id),
-      input_schema: rowsToSchema(values.schema_rows, values.context, record?.input_schema),
+      input_schema: rowsToSchema(values.schema_rows, values.context, record?.input_schema, {
+        oneOf: values.one_of,
+        contextRules: values.context_rules,
+      }),
       price_rules: buildPriceRules(values),
     };
     try {
@@ -436,6 +460,13 @@ export default function AiOperationDrawer({ open, record, onClose }) {
                                   : Promise.resolve(),
                             },
                           ]}
+                          extra={
+                            row.name === 'location' && row.type === 'string'
+                              ? hasContext
+                                ? 'Overrides the business city for this request.'
+                                : 'Overrides the business city — only when the operation has context.'
+                              : undefined
+                          }
                         >
                           <Input placeholder="aspect_ratio" />
                         </Form.Item>
@@ -491,8 +522,76 @@ export default function AiOperationDrawer({ open, record, onClose }) {
                         />
                       </Col>
                     </Row>
+                    {row.type === 'enum' && (
+                      <Form.Item
+                        name={[field.name, 'enum_mode']}
+                        label="Choices given as"
+                        initialValue="values"
+                        extra={
+                          row.enum_mode === 'options'
+                            ? 'Options carry attributes (label, gender, languages…) that "match" can filter on.'
+                            : undefined
+                        }
+                      >
+                        <Segmented
+                          size="small"
+                          options={[
+                            { value: 'values', label: 'Plain values' },
+                            { value: 'options', label: 'Options with attributes' },
+                          ]}
+                        />
+                      </Form.Item>
+                    )}
+                    {row.type === 'enum' && row.enum_mode === 'options' && (
+                      <Row gutter={8}>
+                        <Col xs={24} md={14}>
+                          <Form.Item
+                            name={[field.name, 'options_json']}
+                            label="Options (JSON)"
+                            rules={[enumOptionsRule]}
+                            extra='Each needs a unique string "value"; other keys are free attributes.'
+                          >
+                            <Input.TextArea
+                              autoSize={{ minRows: 3, maxRows: 14 }}
+                              style={monoArea}
+                              spellCheck={false}
+                              placeholder={OPTIONS_PLACEHOLDER}
+                            />
+                          </Form.Item>
+                        </Col>
+                        <Col xs={24} md={10}>
+                          <Form.Item
+                            name={[field.name, 'match_json']}
+                            label="Match (JSON, optional)"
+                            dependencies={[['schema_rows', field.name, 'options_json']]}
+                            rules={[
+                              {
+                                validator: () => {
+                                  const cur = form.getFieldValue(['schema_rows', field.name]) || {};
+                                  const names = (form.getFieldValue('schema_rows') || [])
+                                    .map((r) => r?.name)
+                                    .filter(Boolean);
+                                  const problems = matchProblems(cur, names);
+                                  return problems.length
+                                    ? Promise.reject(new Error(problems.join('; ')))
+                                    : Promise.resolve();
+                                },
+                              },
+                            ]}
+                            extra="Option attribute → another field; only options whose attribute matches that field’s value are allowed. Every option must carry the attribute."
+                          >
+                            <Input.TextArea
+                              autoSize={{ minRows: 3, maxRows: 8 }}
+                              style={monoArea}
+                              spellCheck={false}
+                              placeholder={'{ "gender": "voice_gender", "languages": "language" }'}
+                            />
+                          </Form.Item>
+                        </Col>
+                      </Row>
+                    )}
                     <Row gutter={8}>
-                      {row.type === 'enum' && (
+                      {row.type === 'enum' && row.enum_mode !== 'options' && (
                         <Col xs={24} md={14}>
                           <Form.Item
                             name={[field.name, 'values']}
@@ -507,6 +606,24 @@ export default function AiOperationDrawer({ open, record, onClose }) {
                             ]}
                           >
                             <Select mode="tags" tokenSeparators={[',']} placeholder="square, portrait" />
+                          </Form.Item>
+                        </Col>
+                      )}
+                      {row.type === 'string' && (
+                        <Col xs={12} md={6}>
+                          <Form.Item
+                            name={[field.name, 'max_words']}
+                            label="Max words"
+                            rules={[
+                              {
+                                validator: (_r, v) =>
+                                  v === undefined || v === null || v === '' || (Number.isInteger(v) && v > 0)
+                                    ? Promise.resolve()
+                                    : Promise.reject(new Error('A positive whole number')),
+                              },
+                            ]}
+                          >
+                            <InputNumber min={1} precision={0} style={{ width: '100%' }} />
                           </Form.Item>
                         </Col>
                       )}
@@ -525,7 +642,9 @@ export default function AiOperationDrawer({ open, record, onClose }) {
                 type="dashed"
                 block
                 icon={<PlusOutlined />}
-                onClick={() => add({ name: '', type: 'string', required: false, values: [] })}
+                onClick={() =>
+                  add({ name: '', type: 'string', required: false, values: [], enum_mode: 'values' })
+                }
               >
                 Add field
               </Button>
@@ -550,6 +669,100 @@ export default function AiOperationDrawer({ open, record, onClose }) {
           ]}
         >
           <Checkbox.Group options={SCHEMA_CONTEXT_OPTIONS} />
+        </Form.Item>
+
+        {hasContext && (
+          <Card size="small" title="Context rules" style={{ marginBottom: 16 }}>
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name={['context_rules', 'need_subject']}
+                  label="Need a subject"
+                  valuePropName="checked"
+                  extra="Refuse a request with no business, project or notes. Default on."
+                >
+                  <Switch />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name={['context_rules', 'need_industry']}
+                  label="Need an industry"
+                  valuePropName="checked"
+                  dependencies={['context']}
+                  extra="Refuse a user whose business has no industry. Default off."
+                  rules={[
+                    {
+                      validator: (_r, v) =>
+                        v && !(form.getFieldValue('context') || []).includes('business')
+                          ? Promise.reject(new Error('Needs “Add business details” above'))
+                          : Promise.resolve(),
+                    },
+                  ]}
+                >
+                  <Switch />
+                </Form.Item>
+              </Col>
+            </Row>
+          </Card>
+        )}
+
+        <Form.Item
+          label="Exactly one of"
+          extra="Each group: the request must send exactly one of these fields (e.g. image or project). Fields in a group can’t be required."
+        >
+          <Form.List name="one_of">
+            {(groups, { add, remove }) => (
+              <>
+                {groups.map((g) => (
+                  <Space key={g.key} align="start" style={{ display: 'flex', marginBottom: 8 }}>
+                    <Form.Item
+                      name={g.name}
+                      style={{ marginBottom: 0, minWidth: 360 }}
+                      dependencies={['schema_rows']}
+                      rules={[
+                        {
+                          validator: (_r, v) => {
+                            const list = v || [];
+                            if (list.length < 2) {
+                              return Promise.reject(new Error('Pick at least two fields'));
+                            }
+                            const req = (form.getFieldValue('schema_rows') || [])
+                              .filter((r) => r?.required && list.includes(r.name))
+                              .map((r) => r.name);
+                            return req.length
+                              ? Promise.reject(new Error(`Un-tick Required on: ${req.join(', ')}`))
+                              : Promise.resolve();
+                          },
+                        },
+                      ]}
+                    >
+                      <Select
+                        mode="multiple"
+                        placeholder="image, project"
+                        options={fieldNames.map((n) => ({ value: n, label: n }))}
+                      />
+                    </Form.Item>
+                    <Button
+                      danger
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      onClick={() => remove(g.name)}
+                    />
+                  </Space>
+                ))}
+                <Button
+                  type="dashed"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  disabled={fieldNames.length < 2}
+                  onClick={() => add([])}
+                >
+                  Add group
+                </Button>
+              </>
+            )}
+          </Form.List>
         </Form.Item>
 
         <Divider orientation="left">Price rules</Divider>
